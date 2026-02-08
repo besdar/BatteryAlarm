@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Permission to create and run foreground services -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    
+    <!-- Permission for special use foreground services (battery monitoring) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    
+    <!-- Permission to post notifications (required for Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
+    <!-- Permission to prevent device from sleeping while monitoring -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    
+    <!-- Permission to receive battery changed broadcasts -->
+    <uses-permission android:name="android.permission.BATTERY_STATS" 
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Permission to vibrate the device for alerts -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Permission to receive boot completed broadcast -->
+    <!-- This allows us to restart the battery monitoring service after device reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.BatteryAlarm">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.BatteryAlarm">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 
+            BatteryMonitorService: A foreground service that monitors battery levels.
+            
+            Why foregroundServiceType="specialUse"?
+            - Android 14 (API 34) requires declaring a specific type for foreground services
+            - "specialUse" is appropriate for battery monitoring which doesn't fit other categories
+            - We must also include a <property> explaining the special use case
+            
+            Why exported="false"?
+            - This service is only started from within our app, not by other apps
+            - Security best practice: don't expose services unless necessary
+        -->
+        <service
+            android:name=".service.BatteryMonitorService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            
+            <!-- Required for Android 14+ to explain why we use specialUse type -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Battery level monitoring to alert users at low/high thresholds" />
+        </service>
+
+        <!--
+            BootCompletedReceiver: Restarts the battery monitoring service after device reboot.
+            
+            Why is this needed?
+            - When the device reboots, all services are stopped
+            - Android does NOT automatically restart services after reboot
+            - We need to listen for BOOT_COMPLETED and restart the service ourselves
+            - The receiver checks SharedPreferences to see if service was enabled
+            
+            Why exported="true"?
+            - The system needs to send us the BOOT_COMPLETED broadcast
+            - Without exported="true", we wouldn't receive the broadcast
+            
+            Why the intent-filter?
+            - We only want to receive BOOT_COMPLETED broadcasts
+            - This is a static receiver (declared in manifest) so it works even when app isn't running
+        -->
+        <receiver
+            android:name=".receiver.BootCompletedReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

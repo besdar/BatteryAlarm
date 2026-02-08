@@ -1,0 +1,103 @@
+<resources>
+    <string name="app_name">Battery Alarm</string>
+
+    <!-- Accessibility content descriptions -->
+    <string name="cd_settings">Settings</string>
+    <string name="cd_enable_monitoring">Enable battery monitoring</string>
+    <string name="cd_disable_monitoring">Disable battery monitoring</string>
+
+    <!-- Status text with formatting to avoid duplication and support localization -->
+    <string name="battery_monitoring_status">Battery monitoring is %1$s</string>
+    <string name="on_label">ON</string>
+    <string name="off_label">OFF</string>
+
+    <!-- Notification Channel Names and Descriptions -->
+    <!-- These are shown in Android Settings > Apps > Battery Alarm > Notifications -->
+    <string name="notification_channel_service_name">Monitoring Status</string>
+    <string name="notification_channel_service_description">Shows when battery monitoring is active</string>
+    <string name="notification_channel_alerts_name">Battery Alerts</string>
+    <string name="notification_channel_alerts_description">Alerts when battery reaches low or high thresholds</string>
+
+    <!-- Service Notification (persistent notification while monitoring) -->
+    <string name="notification_service_title">Battery Monitoring Active</string>
+    <string name="notification_service_content">Monitoring battery level…</string>
+    <string name="notification_service_content_with_level">Battery level: %1$d%%</string>
+
+    <!-- Notification Action Buttons -->
+    <string name="notification_action_stop">Stop</string>
+    <string name="notification_action_dismiss">Dismiss</string>
+
+    <!-- Battery Alert Notifications -->
+    <!-- Low battery alerts (when discharging and below threshold) -->
+    <string name="alert_title_low_battery">Low Battery Warning</string>
+    <string name="alert_message_low_battery">Battery is at %1$d%%. Consider charging your device.</string>
+
+    <!-- High battery alerts (when charging and above threshold) -->
+    <string name="alert_title_high_battery">High Battery Alert</string>
+    <string name="alert_message_high_battery">Battery is at %1$d%%. Consider unplugging to preserve battery health.</string>
+
+    <!-- Fully charged alerts -->
+    <string name="alert_title_fully_charged">Battery Fully Charged</string>
+    <string name="alert_message_fully_charged">Battery is at 100%%. Unplug to preserve battery health.</string>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- Settings Screen Strings                                 -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+
+    <!-- Settings screen title (shown in the top app bar) -->
+    <string name="settings_title">Settings</string>
+
+    <!-- Section headers that group related settings together -->
+    <string name="settings_section_thresholds">Battery Thresholds</string>
+    <string name="settings_section_timing">Alert Timing</string>
+    <string name="settings_section_alerts">Alert Behavior</string>
+
+    <!-- Low battery threshold setting -->
+    <string name="settings_low_threshold_title">Low Battery Threshold</string>
+    <string name="settings_low_threshold_summary">Alert when battery drops to %1$d%%</string>
+
+    <!-- High battery threshold setting -->
+    <string name="settings_high_threshold_title">High Battery Threshold</string>
+    <string name="settings_high_threshold_summary">Alert when battery rises to %1$d%% while charging</string>
+
+    <!-- Minimum alert interval setting -->
+    <string name="settings_alert_interval_title">Minimum Alert Interval</string>
+    <string name="settings_alert_interval_summary">Wait at least %1$d min between alerts</string>
+
+    <!-- Full charge reminder interval setting -->
+    <string name="settings_full_charge_interval_title">Full Charge Reminder</string>
+    <string name="settings_full_charge_interval_summary">Remind every %1$d min when at 100%%</string>
+
+    <!-- Alert duration setting -->
+    <string name="settings_alert_duration_title">Alert Duration</string>
+    <string name="settings_alert_duration_summary">Sound and vibration play for %1$d sec</string>
+
+    <!-- Sound toggle -->
+    <string name="settings_sound_title">Alert Sound</string>
+    <string name="settings_sound_summary_on">Alert sound is enabled</string>
+    <string name="settings_sound_summary_off">Alert sound is disabled</string>
+
+    <!-- Vibration toggle -->
+    <string name="settings_vibration_title">Vibration</string>
+    <string name="settings_vibration_summary_on">Vibration is enabled</string>
+    <string name="settings_vibration_summary_off">Vibration is disabled</string>
+
+    <!-- Reset button -->
+    <string name="settings_reset_defaults">Reset to Defaults</string>
+    <string name="settings_reset_confirmation">Reset all settings to their default values?</string>
+    <string name="settings_reset_confirm_button">Reset</string>
+    <string name="settings_reset_cancel_button">Cancel</string>
+
+    <!-- Accessibility content descriptions for settings -->
+    <string name="cd_navigate_back">Navigate back</string>
+    <string name="cd_low_threshold_slider">Adjust low battery threshold</string>
+    <string name="cd_high_threshold_slider">Adjust high battery threshold</string>
+    <string name="cd_alert_interval_slider">Adjust minimum alert interval</string>
+    <string name="cd_full_charge_interval_slider">Adjust full charge reminder interval</string>
+    <string name="cd_alert_duration_slider">Adjust alert duration</string>
+
+    <!-- Unit labels shown alongside slider values -->
+    <string name="unit_percent">%1$d%%</string>
+    <string name="unit_minutes">%1$d min</string>
+    <string name="unit_seconds">%1$d sec</string>
+</resources>
