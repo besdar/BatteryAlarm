@@ -1,15 +1,15 @@
 package com.example.battery_alarm.ui
 
-import android.content.Context
+import android.content.Intent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -19,8 +19,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -28,12 +30,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.battery_alarm.BuildConfig
 import com.example.battery_alarm.R
+import com.example.battery_alarm.data.SettingsRepository
+import com.example.battery_alarm.data.SharedPreferencesStorage
 import com.example.battery_alarm.service.BatteryMonitorService
 import com.example.battery_alarm.ui.theme.BatteryAlarmTheme
+import com.example.battery_alarm.update.GitHubUpdateChecker
+import com.example.battery_alarm.update.UpdateChecker
+import com.example.battery_alarm.update.VersionComparator
+import androidx.core.net.toUri
 
 /**
  * Main screen composable for the Battery Alarm app.
@@ -70,29 +78,41 @@ import com.example.battery_alarm.ui.theme.BatteryAlarmTheme
  * - The `hasNotificationPermission` parameter tells us if the user granted permission
  * - If permission is not granted, we show a warning and request it when user tries to enable service
  * - The `onRequestNotificationPermission` callback triggers the permission request dialog
+ *
+ * ## Update Check (GitHub Releases):
+ * - On every composition, the screen launches a coroutine to check for updates
+ *   via the GitHub Releases API using [UpdateChecker].
+ * - If a newer version is found, an update icon appears in the top-start corner.
+ * - Tapping the icon opens the GitHub releases page in the default browser.
+ * - The [updateChecker] parameter defaults to [GitHubUpdateChecker] in production
+ *   but can be replaced with a fake in tests/previews.
  * 
  * @param modifier Modifier for the root composable
  * @param hasNotificationPermission Whether the app has permission to show notifications (passed from MainActivity)
  * @param onRequestNotificationPermission Callback to request notification permission when needed
  * @param onNavigateToSettings Callback invoked when the user taps the Settings gear icon.
  *                              MainActivity handles the actual screen switch.
+ * @param updateChecker The [UpdateChecker] implementation to use for fetching the latest version.
+ *                       Defaults to [GitHubUpdateChecker] (production). Pass a fake for testing.
  */
 @Composable
 fun MainScreen(
     modifier: Modifier = Modifier,
     hasNotificationPermission: Boolean = true,
     onRequestNotificationPermission: () -> Unit = {},
-    onNavigateToSettings: () -> Unit = {}
+    onNavigateToSettings: () -> Unit = {},
+    updateChecker: UpdateChecker = remember { GitHubUpdateChecker() }
 ) {
-    // Get context for starting/stopping the service and accessing SharedPreferences
+    // Get context for starting/stopping the service
     val context = LocalContext.current
 
-    // SharedPreferences key for persisting service state
-    // This allows the app to remember if the service was enabled when the app restarts
-    val prefs = context.getSharedPreferences("battery_alarm_prefs", Context.MODE_PRIVATE)
+    // Create the SettingsRepository using SharedPreferencesStorage.
+    // This uses the SettingsStorage interface abstraction — the repository
+    // doesn't directly touch Android's SharedPreferences anymore.
+    val repository = remember { SettingsRepository(SharedPreferencesStorage(context)) }
 
-    // Get the saved preference value
-    val savedServiceEnabled = prefs.getBoolean("service_enabled", false)
+    // Get the saved preference value through the repository
+    val savedServiceEnabled = repository.isServiceEnabled
     
     // Get the ACTUAL service running state
     // This is important after a reboot - SharedPreferences might say "enabled"
@@ -107,23 +127,44 @@ fun MainScreen(
     // We choose option 2 to avoid confusing the user and to respect permission flow
     val initialState = actualServiceRunning
     
-    // If there's a mismatch between saved state and actual state, sync SharedPreferences
+    // If there's a mismatch between saved state and actual state, sync via repository
     // This handles the case where:
     // - Service was enabled, device rebooted, but service didn't restart properly
-    // - Now SharedPreferences says "enabled" but service isn't running
-    // We update SharedPreferences to match reality so the UI is consistent
+    // - Now the repository says "enabled" but service isn't running
+    // We update the repository to match reality so the UI is consistent
     if (savedServiceEnabled != actualServiceRunning) {
-        // Update SharedPreferences to match the actual service state
-        prefs.edit().putBoolean("service_enabled", actualServiceRunning).apply()
+        // Update repository to match the actual service state
+        repository.isServiceEnabled = actualServiceRunning
         android.util.Log.d("MainScreen", 
-            "Synced SharedPreferences with actual service state: " +
+            "Synced settings with actual service state: " +
             "saved=$savedServiceEnabled, actual=$actualServiceRunning")
     }
 
-    // Initialize state from the ACTUAL service state (not just SharedPreferences)
+    // Initialize state from the ACTUAL service state (not just saved settings)
     // rememberSaveable survives configuration changes
     var isServiceEnabled by rememberSaveable {
         mutableStateOf(initialState)
+    }
+
+    // ── Update Check State ──────────────────────────────────
+    // Tracks whether a newer version is available on GitHub.
+    // `rememberSaveable` ensures the state survives configuration changes
+    // (rotation, theme change) without re-fetching from the network.
+    var isUpdateAvailable by rememberSaveable { mutableStateOf(false) }
+
+    // LaunchedEffect keyed on Unit runs exactly once per composition lifecycle.
+    // It fires a coroutine to check GitHub for the latest release version.
+    // If the network call fails, isUpdateAvailable stays false (no icon shown).
+    LaunchedEffect(Unit) {
+        val latestVersion = updateChecker.getLatestVersion()
+        if (latestVersion != null) {
+            // Compare the fetched version with the app's current version
+            // (BuildConfig.VERSION_NAME is set in build.gradle.kts)
+            isUpdateAvailable = VersionComparator.isNewerVersion(
+                currentVersion = BuildConfig.VERSION_NAME,
+                latestVersion = latestVersion
+            )
+        }
     }
 
     // Animated colors for a smoother, more delightful state transition
@@ -144,6 +185,32 @@ fun MainScreen(
     val scale by animateFloatAsState(targetValue = if (isServiceEnabled) 1.05f else 1f, label = "fabScale")
 
     Box(modifier = modifier.fillMaxSize()) {
+        // ── Update Available Icon (top-start corner) ─────────
+        // Shown only when a newer version is detected on GitHub.
+        // Tapping it opens the GitHub releases page in the default browser
+        // so the user can download the latest APK.
+        if (isUpdateAvailable) {
+            IconButton(
+                onClick = {
+                    // Open the GitHub releases page in the default browser
+                    val browserIntent = Intent(
+                        Intent.ACTION_VIEW,
+                        GitHubUpdateChecker.GITHUB_LATEST_RELEASE_PAGE_URL.toUri()
+                    )
+                    context.startActivity(browserIntent)
+                },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.SystemUpdate,
+                    contentDescription = stringResource(R.string.cd_update_available),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
         // Settings button at the top-end
         // When tapped, it triggers the navigation callback provided by MainActivity
         IconButton(
@@ -178,9 +245,9 @@ fun MainScreen(
                 
                 isServiceEnabled = newState
 
-                // Persist the new state to SharedPreferences
+                // Persist the new state through the repository
                 // This ensures the app remembers the setting even after being closed
-                prefs.edit().putBoolean("service_enabled", newState).apply()
+                repository.isServiceEnabled = newState
 
                 // Start or stop the BatteryMonitorService based on the new state
                 if (newState) {

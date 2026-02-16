@@ -8,7 +8,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
@@ -16,9 +15,9 @@ import org.robolectric.annotation.Config
  *
  * ## What Does BootCompletedReceiver Do?
  * After a device reboot, all running services are stopped. This BroadcastReceiver
- * listens for the BOOT_COMPLETED system broadcast and checks SharedPreferences
- * to see if the BatteryMonitorService was running before the reboot. If it was,
- * the receiver restarts the service automatically.
+ * listens for the BOOT_COMPLETED system broadcast and delegates to a [ServiceRestarter]
+ * to check if the BatteryMonitorService was running before the reboot. If it was,
+ * the receiver tells the restarter to restart the service automatically.
  *
  * ## What Are We Testing?
  * 1. **Null safety**: The receiver should handle null context/intent gracefully
@@ -26,24 +25,32 @@ import org.robolectric.annotation.Config
  * 2. **Action filtering**: The receiver should only act on BOOT_COMPLETED, ignoring
  *    any other action.
  * 3. **Service restart logic**: When the service WAS enabled before reboot,
- *    the receiver should start BatteryMonitorService.
+ *    the receiver should call [ServiceRestarter.restartService].
  * 4. **No-op when disabled**: When the service was NOT enabled, the receiver
- *    should do nothing.
+ *    should NOT call [ServiceRestarter.restartService].
  *
- * ## Why Robolectric?
- * We need a real Android `Context` to:
- * - Create SharedPreferences (to set the "service_enabled" flag)
- * - Verify that `startForegroundService()` was called (using Robolectric's shadow)
+ * ## Why Still Robolectric?
+ * Even after the abstraction refactoring, we still need Robolectric here because:
+ * - [BootCompletedReceiver] extends Android's `BroadcastReceiver` (an Android class).
+ * - `onReceive()` takes `Context` and `Intent` parameters (Android classes).
+ * - `Intent.ACTION_BOOT_COMPLETED` is an Android constant.
  *
- * Robolectric's "shadow" system intercepts Android API calls and records them,
- * so we can assert that the correct service was started without running on a
- * real device.
+ * However, the **business logic** (the decision to restart) is now tested through
+ * [FakeServiceRestarter] — no SharedPreferences or shadow checking needed!
+ * This is a significant improvement: we no longer need `shadowOf(application)`
+ * to verify that a service was started. Instead, we simply check
+ * `fakeRestarter.restartServiceCalled`.
  *
- * ## Key Concept: Shadow Objects
- * Robolectric replaces real Android classes with "shadows" — test doubles that
- * record method calls. For example:
- * - `shadowOf(application)` gives us a `ShadowApplication` that records all
- *   started services, so we can check if `BatteryMonitorService` was started.
+ * ## Key Improvement Over Previous Tests
+ * **Before** (direct Android dependency):
+ * - Had to set up SharedPreferences manually with raw keys
+ * - Had to use `shadowOf(RuntimeEnvironment.getApplication()).nextStartedService`
+ * - Tests were tightly coupled to Android internals
+ *
+ * **After** (with ServiceRestarter abstraction):
+ * - Inject a [FakeServiceRestarter] with the desired state
+ * - Assert on `fakeRestarter.restartServiceCalled` — simple boolean check
+ * - Business logic tests are cleaner and more focused
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -60,24 +67,18 @@ class BootCompletedReceiverTest {
     /**
      * Set up fresh test fixtures before each test.
      *
-     * We create a new receiver instance and clear SharedPreferences
-     * so each test starts from a known clean state.
+     * We create a new receiver instance for each test to ensure clean state.
+     * Note: we no longer need to clear SharedPreferences since the business
+     * logic is now delegated to FakeServiceRestarter.
      */
     @Before
     fun setUp() {
         // Create a fresh receiver for each test
         receiver = BootCompletedReceiver()
 
-        // Get the Robolectric-managed application context
+        // Get the Robolectric-managed application context.
+        // Still needed because onReceive() requires a Context parameter.
         context = RuntimeEnvironment.getApplication()
-
-        // Clear SharedPreferences to ensure a clean starting state.
-        // The receiver reads "service_enabled" from "battery_alarm_prefs",
-        // so we need to make sure there's no leftover data from other tests.
-        context.getSharedPreferences("battery_alarm_prefs", Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .commit()
     }
 
     // ═════════════════════════════════════════════════════════════
@@ -126,9 +127,10 @@ class BootCompletedReceiverTest {
     // ═════════════════════════════════════════════════════════════
 
     @Test
-    fun `onReceive - wrong action - does not start service`() {
+    fun `onReceive - wrong action - does not restart service`() {
         // Given: the service was enabled before "reboot"
-        setServiceEnabled(true)
+        val fakeRestarter = FakeServiceRestarter(serviceEnabled = true)
+        receiver.serviceRestarter = fakeRestarter
 
         // And: we receive an intent with the WRONG action
         val wrongIntent = Intent("com.example.WRONG_ACTION")
@@ -136,13 +138,10 @@ class BootCompletedReceiverTest {
         // When: the receiver processes the wrong intent
         receiver.onReceive(context, wrongIntent)
 
-        // Then: no service should have been started
-        // We check Robolectric's shadow to see if any service start was attempted
-        val shadowApp = shadowOf(RuntimeEnvironment.getApplication())
-        val startedService = shadowApp.nextStartedService
-        assertNull(
-            "No service should be started for wrong action",
-            startedService
+        // Then: the restarter should NOT have been called
+        assertFalse(
+            "Service should not be restarted for wrong action",
+            fakeRestarter.restartServiceCalled
         )
     }
 
@@ -151,14 +150,15 @@ class BootCompletedReceiverTest {
     // ═════════════════════════════════════════════════════════════
     //
     // The core behavior: if the service was enabled before reboot,
-    // the receiver should restart it.
+    // the receiver should restart it via the ServiceRestarter.
     // ═════════════════════════════════════════════════════════════
 
     @Test
-    fun `onReceive - service was enabled - starts BatteryMonitorService`() {
+    fun `onReceive - service was enabled - restarts service`() {
         // Given: the service was enabled before the "reboot"
-        // (we simulate this by writing to SharedPreferences directly)
-        setServiceEnabled(true)
+        // (simulated by configuring FakeServiceRestarter with serviceEnabled = true)
+        val fakeRestarter = FakeServiceRestarter(serviceEnabled = true)
+        receiver.serviceRestarter = fakeRestarter
 
         // And: we receive the BOOT_COMPLETED broadcast
         val bootIntent = Intent(Intent.ACTION_BOOT_COMPLETED)
@@ -166,22 +166,10 @@ class BootCompletedReceiverTest {
         // When: the receiver processes the broadcast
         receiver.onReceive(context, bootIntent)
 
-        // Then: the BatteryMonitorService should have been started
-        // Robolectric's shadow records all service start requests
-        val shadowApp = shadowOf(RuntimeEnvironment.getApplication())
-        val startedService = shadowApp.nextStartedService
-
-        assertNotNull(
-            "BatteryMonitorService should be started after boot when it was enabled",
-            startedService
-        )
-
-        // Verify it's specifically the BatteryMonitorService that was started
-        // (not some other service)
-        assertEquals(
-            "The started service should be BatteryMonitorService",
-            "com.example.battery_alarm.service.BatteryMonitorService",
-            startedService!!.component?.className
+        // Then: the service restarter should have been called
+        assertTrue(
+            "Service should be restarted after boot when it was enabled",
+            fakeRestarter.restartServiceCalled
         )
     }
 
@@ -190,13 +178,14 @@ class BootCompletedReceiverTest {
     // ═════════════════════════════════════════════════════════════
     //
     // If the service was NOT enabled before reboot, the receiver
-    // should do nothing — no service start, no errors.
+    // should do nothing — no service restart, no errors.
     // ═════════════════════════════════════════════════════════════
 
     @Test
-    fun `onReceive - service was not enabled - does not start service`() {
+    fun `onReceive - service was not enabled - does not restart service`() {
         // Given: the service was NOT enabled (default state)
-        // SharedPreferences is clean (cleared in setUp), so "service_enabled" defaults to false
+        val fakeRestarter = FakeServiceRestarter(serviceEnabled = false)
+        receiver.serviceRestarter = fakeRestarter
 
         // And: we receive the BOOT_COMPLETED broadcast
         val bootIntent = Intent(Intent.ACTION_BOOT_COMPLETED)
@@ -204,19 +193,18 @@ class BootCompletedReceiverTest {
         // When: the receiver processes the broadcast
         receiver.onReceive(context, bootIntent)
 
-        // Then: no service should have been started
-        val shadowApp = shadowOf(RuntimeEnvironment.getApplication())
-        val startedService = shadowApp.nextStartedService
-        assertNull(
-            "No service should be started when service was not enabled before reboot",
-            startedService
+        // Then: the service restarter should NOT have been called
+        assertFalse(
+            "Service should not be restarted when it was not enabled before reboot",
+            fakeRestarter.restartServiceCalled
         )
     }
 
     @Test
-    fun `onReceive - service explicitly disabled - does not start service`() {
-        // Given: the service was explicitly disabled (set to false)
-        setServiceEnabled(false)
+    fun `onReceive - service explicitly disabled - does not restart service`() {
+        // Given: the service was explicitly disabled (serviceEnabled = false)
+        val fakeRestarter = FakeServiceRestarter(serviceEnabled = false)
+        receiver.serviceRestarter = fakeRestarter
 
         // And: we receive the BOOT_COMPLETED broadcast
         val bootIntent = Intent(Intent.ACTION_BOOT_COMPLETED)
@@ -224,36 +212,10 @@ class BootCompletedReceiverTest {
         // When: the receiver processes the broadcast
         receiver.onReceive(context, bootIntent)
 
-        // Then: no service should be started
-        val shadowApp = shadowOf(RuntimeEnvironment.getApplication())
-        assertNull(
-            "No service should be started when service was explicitly disabled",
-            shadowApp.nextStartedService
+        // Then: the service should NOT be restarted
+        assertFalse(
+            "Service should not be restarted when explicitly disabled",
+            fakeRestarter.restartServiceCalled
         )
-    }
-
-    // ═════════════════════════════════════════════════════════════
-    //  HELPER METHODS
-    // ═════════════════════════════════════════════════════════════
-
-    /**
-     * Helper method to set the "service_enabled" flag in SharedPreferences.
-     *
-     * This simulates what happens in the real app when the user enables or
-     * disables the service via the MainScreen toggle button. The
-     * BootCompletedReceiver reads this value to decide whether to restart
-     * the service after a reboot.
-     *
-     * We use `.commit()` instead of `.apply()` here because we need the
-     * write to complete synchronously before the test proceeds. In the real
-     * app, `.apply()` is fine because there's no immediate read after write.
-     *
-     * @param enabled Whether the service should be marked as enabled.
-     */
-    private fun setServiceEnabled(enabled: Boolean) {
-        context.getSharedPreferences("battery_alarm_prefs", Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean("service_enabled", enabled)
-            .commit()  // commit() is synchronous — important for test reliability
     }
 }

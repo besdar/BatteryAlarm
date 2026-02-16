@@ -1,7 +1,5 @@
 package com.example.battery_alarm.data
 
-import android.content.Context
-import android.content.SharedPreferences
 import com.example.battery_alarm.service.BatteryMonitorService
 
 /**
@@ -9,41 +7,44 @@ import com.example.battery_alarm.service.BatteryMonitorService
  * all user-configurable settings in the Battery Alarm app.
  *
  * ## Why a Repository?
- * Instead of scattering SharedPreferences calls throughout the codebase
+ * Instead of scattering storage calls throughout the codebase
  * (in the service, UI, receiver, etc.), we consolidate them here. This gives us:
  * - **Single source of truth**: All settings keys and defaults live in one place.
- * - **Encapsulation**: If we later migrate from SharedPreferences to DataStore or a
- *   database, only this file needs to change.
+ * - **Encapsulation**: The rest of the code doesn't know or care *how* settings are stored.
  * - **Readability**: The rest of the code just calls `repository.lowThreshold` instead
- *   of dealing with raw SharedPreferences.
+ *   of dealing with raw storage calls.
  *
- * ## How SharedPreferences Work
- * SharedPreferences is Android's simple key-value storage backed by an XML file.
- * - It stores primitive types (Int, Long, Boolean, String, Float, Set<String>).
- * - It persists data across app restarts and device reboots.
- * - Data is stored in: `/data/data/<package>/shared_prefs/<name>.xml`
- * - It's synchronous for reads and asynchronous for writes (using `.apply()`).
+ * ## Abstraction: SettingsStorage Interface
+ * This repository now depends on [SettingsStorage] — a pure Kotlin interface —
+ * instead of Android's `Context` and `SharedPreferences` directly. This is the
+ * **Dependency Inversion Principle** (the "D" in SOLID):
+ *
+ * ```
+ * SettingsRepository ──uses──▶ SettingsStorage (interface)
+ *                                      │
+ *                             ┌────────┴────────┐
+ *                             ▼                  ▼
+ *               SharedPreferencesStorage    FakeSettingsStorage
+ *               (real app — Android)       (tests — plain Kotlin)
+ * ```
+ *
+ * ### What this enables:
+ * - **Fast tests**: Tests use [FakeSettingsStorage] (a HashMap) — no Robolectric needed.
+ * - **Swappable storage**: Migrating to DataStore or Room only requires a new
+ *   [SettingsStorage] implementation; this class stays unchanged.
+ * - **Platform flexibility**: If the app moves to Kotlin Multiplatform, each platform
+ *   provides its own [SettingsStorage] implementation.
  *
  * ## Thread Safety
- * SharedPreferences reads are thread-safe. Writes using `.apply()` are asynchronous
- * and also thread-safe. We use `.apply()` (non-blocking) instead of `.commit()`
- * (blocking) because we don't need to wait for the write to complete.
+ * This class delegates all persistence to the [SettingsStorage] implementation.
+ * The [SharedPreferencesStorage] implementation uses `.apply()` for async, thread-safe writes.
+ * Reads are synchronous and thread-safe (as guaranteed by SharedPreferences).
  *
- * @param context The application or activity context used to access SharedPreferences.
- *                Using application context is preferred to avoid memory leaks.
+ * @param storage The storage backend to use for reading/writing settings.
+ *                In the real app, pass [SharedPreferencesStorage].
+ *                In tests, pass [FakeSettingsStorage].
  */
-class SettingsRepository(context: Context) {
-
-    /**
-     * The SharedPreferences instance that stores all our settings.
-     *
-     * We reuse the same preferences file ("battery_alarm_prefs") that the app
-     * already uses for the service_enabled flag. This keeps all settings in one place.
-     *
-     * MODE_PRIVATE means only our app can access this file.
-     */
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+class SettingsRepository(private val storage: SettingsStorage) {
 
     // ─────────────────────────────────────────────────────────
     //  Low Battery Threshold (percentage, 5–95)
@@ -58,11 +59,11 @@ class SettingsRepository(context: Context) {
      * Valid range: [MIN_THRESHOLD .. MAX_THRESHOLD] (5–95)
      */
     var lowThreshold: Int
-        get() = prefs.getInt(KEY_LOW_THRESHOLD, DEFAULT_LOW_THRESHOLD)
+        get() = storage.getInt(KEY_LOW_THRESHOLD, DEFAULT_LOW_THRESHOLD)
         set(value) {
             // Clamp the value to valid range before saving
             val clamped = value.coerceIn(MIN_THRESHOLD, MAX_THRESHOLD)
-            prefs.edit().putInt(KEY_LOW_THRESHOLD, clamped).apply()
+            storage.putInt(KEY_LOW_THRESHOLD, clamped)
         }
 
     // ─────────────────────────────────────────────────────────
@@ -78,10 +79,10 @@ class SettingsRepository(context: Context) {
      * Valid range: [MIN_THRESHOLD .. MAX_THRESHOLD] (5–95)
      */
     var highThreshold: Int
-        get() = prefs.getInt(KEY_HIGH_THRESHOLD, DEFAULT_HIGH_THRESHOLD)
+        get() = storage.getInt(KEY_HIGH_THRESHOLD, DEFAULT_HIGH_THRESHOLD)
         set(value) {
             val clamped = value.coerceIn(MIN_THRESHOLD, MAX_THRESHOLD)
-            prefs.edit().putInt(KEY_HIGH_THRESHOLD, clamped).apply()
+            storage.putInt(KEY_HIGH_THRESHOLD, clamped)
         }
 
     // ─────────────────────────────────────────────────────────
@@ -93,17 +94,17 @@ class SettingsRepository(context: Context) {
      *
      * This prevents the app from annoying the user with too-frequent notifications.
      * Default is 10 minutes. The user can increase this for less frequent alerts
-     * or decrease it (minimum 1 minute) for more responsive monitoring.
+     * or decrease it (minimum 5 minutes) for more responsive monitoring.
      *
      * Stored as minutes in preferences, converted to milliseconds when needed by the service.
      *
-     * Valid range: [MIN_ALERT_INTERVAL_MINUTES .. MAX_ALERT_INTERVAL_MINUTES] (1–60)
+     * Valid range: [MIN_ALERT_INTERVAL_MINUTES .. MAX_ALERT_INTERVAL_MINUTES] (5–60)
      */
     var alertIntervalMinutes: Int
-        get() = prefs.getInt(KEY_ALERT_INTERVAL_MINUTES, DEFAULT_ALERT_INTERVAL_MINUTES)
+        get() = storage.getInt(KEY_ALERT_INTERVAL_MINUTES, DEFAULT_ALERT_INTERVAL_MINUTES)
         set(value) {
             val clamped = value.coerceIn(MIN_ALERT_INTERVAL_MINUTES, MAX_ALERT_INTERVAL_MINUTES)
-            prefs.edit().putInt(KEY_ALERT_INTERVAL_MINUTES, clamped).apply()
+            storage.putInt(KEY_ALERT_INTERVAL_MINUTES, clamped)
         }
 
     /**
@@ -126,13 +127,13 @@ class SettingsRepository(context: Context) {
      * Valid range: [MIN_FULL_CHARGE_INTERVAL_MINUTES .. MAX_FULL_CHARGE_INTERVAL_MINUTES] (5–120)
      */
     var fullChargeAlertIntervalMinutes: Int
-        get() = prefs.getInt(KEY_FULL_CHARGE_INTERVAL_MINUTES, DEFAULT_FULL_CHARGE_INTERVAL_MINUTES)
+        get() = storage.getInt(KEY_FULL_CHARGE_INTERVAL_MINUTES, DEFAULT_FULL_CHARGE_INTERVAL_MINUTES)
         set(value) {
             val clamped = value.coerceIn(
                 MIN_FULL_CHARGE_INTERVAL_MINUTES,
                 MAX_FULL_CHARGE_INTERVAL_MINUTES
             )
-            prefs.edit().putInt(KEY_FULL_CHARGE_INTERVAL_MINUTES, clamped).apply()
+            storage.putInt(KEY_FULL_CHARGE_INTERVAL_MINUTES, clamped)
         }
 
     /**
@@ -154,10 +155,10 @@ class SettingsRepository(context: Context) {
      * Valid range: [MIN_ALERT_DURATION_SECONDS .. MAX_ALERT_DURATION_SECONDS] (5–60)
      */
     var alertDurationSeconds: Int
-        get() = prefs.getInt(KEY_ALERT_DURATION_SECONDS, DEFAULT_ALERT_DURATION_SECONDS)
+        get() = storage.getInt(KEY_ALERT_DURATION_SECONDS, DEFAULT_ALERT_DURATION_SECONDS)
         set(value) {
             val clamped = value.coerceIn(MIN_ALERT_DURATION_SECONDS, MAX_ALERT_DURATION_SECONDS)
-            prefs.edit().putInt(KEY_ALERT_DURATION_SECONDS, clamped).apply()
+            storage.putInt(KEY_ALERT_DURATION_SECONDS, clamped)
         }
 
     /**
@@ -175,9 +176,9 @@ class SettingsRepository(context: Context) {
      * Default is true — most users expect an audible alert.
      */
     var isSoundEnabled: Boolean
-        get() = prefs.getBoolean(KEY_SOUND_ENABLED, DEFAULT_SOUND_ENABLED)
+        get() = storage.getBoolean(KEY_SOUND_ENABLED, DEFAULT_SOUND_ENABLED)
         set(value) {
-            prefs.edit().putBoolean(KEY_SOUND_ENABLED, value).apply()
+            storage.putBoolean(KEY_SOUND_ENABLED, value)
         }
 
     /**
@@ -185,9 +186,30 @@ class SettingsRepository(context: Context) {
      * Default is true — vibration helps catch attention even when the phone is on silent.
      */
     var isVibrationEnabled: Boolean
-        get() = prefs.getBoolean(KEY_VIBRATION_ENABLED, DEFAULT_VIBRATION_ENABLED)
+        get() = storage.getBoolean(KEY_VIBRATION_ENABLED, DEFAULT_VIBRATION_ENABLED)
         set(value) {
-            prefs.edit().putBoolean(KEY_VIBRATION_ENABLED, value).apply()
+            storage.putBoolean(KEY_VIBRATION_ENABLED, value)
+        }
+
+    // ─────────────────────────────────────────────────────────
+    //  Alarm Sound URI
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * The URI string of the user's chosen alarm sound.
+     *
+     * When null, the app uses the system default alarm sound
+     * (via RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)).
+     * When set, it contains a content:// URI pointing to a system ringtone/alarm.
+     *
+     * The user picks this in Settings using Android's ringtone picker.
+     * The URI is stored as a String because URI is an Android class and
+     * we want SettingsRepository to remain pure Kotlin.
+     */
+    var alarmSoundUri: String?
+        get() = storage.getString(KEY_ALARM_SOUND_URI, DEFAULT_ALARM_SOUND_URI)
+        set(value) {
+            storage.putString(KEY_ALARM_SOUND_URI, value)
         }
 
     // ─────────────────────────────────────────────────────────
@@ -200,9 +222,9 @@ class SettingsRepository(context: Context) {
      * Now it's centralized here for consistency.
      */
     var isServiceEnabled: Boolean
-        get() = prefs.getBoolean(KEY_SERVICE_ENABLED, false)
+        get() = storage.getBoolean(KEY_SERVICE_ENABLED, false)
         set(value) {
-            prefs.edit().putBoolean(KEY_SERVICE_ENABLED, value).apply()
+            storage.putBoolean(KEY_SERVICE_ENABLED, value)
         }
 
     // ─────────────────────────────────────────────────────────
@@ -213,28 +235,26 @@ class SettingsRepository(context: Context) {
      * Resets all configurable settings back to their default values.
      * Does NOT reset the service_enabled flag (that's a runtime state, not a "setting").
      *
-     * Uses a single `.edit()` block with `.apply()` at the end so all changes
-     * are written atomically in one batch.
+     * Each setting is written individually through the [SettingsStorage] interface.
+     * The underlying implementation handles persistence details (e.g., batching writes).
      */
     fun resetToDefaults() {
-        prefs.edit()
-            .putInt(KEY_LOW_THRESHOLD, DEFAULT_LOW_THRESHOLD)
-            .putInt(KEY_HIGH_THRESHOLD, DEFAULT_HIGH_THRESHOLD)
-            .putInt(KEY_ALERT_INTERVAL_MINUTES, DEFAULT_ALERT_INTERVAL_MINUTES)
-            .putInt(KEY_FULL_CHARGE_INTERVAL_MINUTES, DEFAULT_FULL_CHARGE_INTERVAL_MINUTES)
-            .putInt(KEY_ALERT_DURATION_SECONDS, DEFAULT_ALERT_DURATION_SECONDS)
-            .putBoolean(KEY_SOUND_ENABLED, DEFAULT_SOUND_ENABLED)
-            .putBoolean(KEY_VIBRATION_ENABLED, DEFAULT_VIBRATION_ENABLED)
-            .apply()
+        storage.putInt(KEY_LOW_THRESHOLD, DEFAULT_LOW_THRESHOLD)
+        storage.putInt(KEY_HIGH_THRESHOLD, DEFAULT_HIGH_THRESHOLD)
+        storage.putInt(KEY_ALERT_INTERVAL_MINUTES, DEFAULT_ALERT_INTERVAL_MINUTES)
+        storage.putInt(KEY_FULL_CHARGE_INTERVAL_MINUTES, DEFAULT_FULL_CHARGE_INTERVAL_MINUTES)
+        storage.putInt(KEY_ALERT_DURATION_SECONDS, DEFAULT_ALERT_DURATION_SECONDS)
+        storage.putBoolean(KEY_SOUND_ENABLED, DEFAULT_SOUND_ENABLED)
+        storage.putBoolean(KEY_VIBRATION_ENABLED, DEFAULT_VIBRATION_ENABLED)
+        // Reset alarm sound back to system default (null = use system default)
+        storage.putString(KEY_ALARM_SOUND_URI, DEFAULT_ALARM_SOUND_URI)
     }
 
     companion object {
-        // ── SharedPreferences file name ──
-        // This is the same file the app already uses for "service_enabled"
-        const val PREFS_NAME = "battery_alarm_prefs"
-
         // ── SharedPreferences keys ──
-        // Each setting has a unique key used to store/retrieve its value
+        // Each setting has a unique key used to store/retrieve its value.
+        // These keys are kept here (not in SettingsStorage) because they are
+        // business-logic concerns — the storage layer doesn't care about key names.
         private const val KEY_LOW_THRESHOLD = "low_threshold"
         private const val KEY_HIGH_THRESHOLD = "high_threshold"
         private const val KEY_ALERT_INTERVAL_MINUTES = "alert_interval_minutes"
@@ -242,6 +262,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_ALERT_DURATION_SECONDS = "alert_duration_seconds"
         private const val KEY_SOUND_ENABLED = "sound_enabled"
         private const val KEY_VIBRATION_ENABLED = "vibration_enabled"
+        private const val KEY_ALARM_SOUND_URI = "alarm_sound_uri"
         const val KEY_SERVICE_ENABLED = "service_enabled"
 
         // ── Default values ──
@@ -267,6 +288,9 @@ class SettingsRepository(context: Context) {
 
         /** Default: vibration alerts are ON */
         const val DEFAULT_VIBRATION_ENABLED = true
+
+        /** Default alarm sound URI: null means "use system default alarm sound" */
+        val DEFAULT_ALARM_SOUND_URI: String? = null
 
         // ── Validation ranges ──
         // These define the minimum and maximum values the user can set

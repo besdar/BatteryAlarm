@@ -1,5 +1,11 @@
 package com.example.battery_alarm.ui
 
+import android.content.Intent
+import android.media.RingtoneManager
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,6 +49,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.battery_alarm.R
 import com.example.battery_alarm.data.SettingsRepository
+import com.example.battery_alarm.data.SharedPreferencesStorage
 import com.example.battery_alarm.ui.theme.BatteryAlarmTheme
 import kotlin.math.roundToInt
 
@@ -110,10 +117,13 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     // ── Obtain the SettingsRepository ──────────────────────────
-    // We create the repository here using LocalContext. In a larger app you'd
-    // use dependency injection (Hilt/Koin), but for a small app this is fine.
+    // We create the repository here using LocalContext and SharedPreferencesStorage.
+    // The repository depends on the SettingsStorage interface (not Android directly),
+    // and we provide the real Android implementation here.
+    // In a larger app you'd use dependency injection (Hilt/Koin), but for a
+    // small app this manual constructor injection is sufficient.
     val context = LocalContext.current
-    val repository = remember { SettingsRepository(context) }
+    val repository = remember { SettingsRepository(SharedPreferencesStorage(context)) }
 
     // ── Local mutable state for each setting ──────────────────
     // We read the initial value from the repository once (via `remember`),
@@ -138,6 +148,41 @@ fun SettingsScreen(
     // Boolean toggles
     var isSoundEnabled by remember { mutableStateOf(repository.isSoundEnabled) }
     var isVibrationEnabled by remember { mutableStateOf(repository.isVibrationEnabled) }
+
+    // Alarm sound URI — null means "use system default"
+    var alarmSoundUri by remember { mutableStateOf(repository.alarmSoundUri) }
+
+    // ── Resolve the alarm sound name for display ──────────────
+    // We show the human-readable ringtone title (e.g., "Alarm Clock")
+    // instead of the raw content:// URI. If null, show "System default".
+    val alarmSoundName = remember(alarmSoundUri) {
+        if (alarmSoundUri != null) {
+            try {
+                val ringtone = RingtoneManager.getRingtone(context, Uri.parse(alarmSoundUri))
+                ringtone?.getTitle(context) ?: context.getString(R.string.settings_alarm_sound_default)
+            } catch (e: Exception) {
+                context.getString(R.string.settings_alarm_sound_default)
+            }
+        } else {
+            context.getString(R.string.settings_alarm_sound_default)
+        }
+    }
+
+    // ── Ringtone picker launcher ──────────────────────────────
+    // Uses Android's built-in ringtone picker Activity. The user sees a list
+    // of all system alarm/ringtone/notification sounds and can select one.
+    // The result is a content:// URI that we store in the repository.
+    val ringtonePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        // The ringtone picker returns the selected URI in the intent extras.
+        // EXTRA_RINGTONE_PICKED_URI contains the chosen ringtone's URI.
+        // If the user selected "Silent", the URI will be null.
+        val uri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+        val uriString = uri?.toString()
+        alarmSoundUri = uriString
+        repository.alarmSoundUri = uriString
+    }
 
     // Controls the "Reset to Defaults?" confirmation dialog
     var showResetDialog by remember { mutableStateOf(false) }
@@ -311,6 +356,42 @@ fun SettingsScreen(
                 }
             )
 
+            // ── Alarm Sound Picker ──
+            // Shows the currently selected alarm sound name and opens the
+            // system ringtone picker when tapped. This lets the user choose
+            // from all system alarm, ringtone, and notification sounds.
+            SettingsClickableItem(
+                title = stringResource(R.string.settings_alarm_sound_title),
+                summary = stringResource(R.string.settings_alarm_sound_summary, alarmSoundName),
+                onClick = {
+                    // Build an intent to launch Android's built-in ringtone picker.
+                    // We configure it to show alarm sounds and allow a "Silent" option.
+                    val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                        // Show alarm sounds (the most appropriate type for a battery alarm app)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALL)
+                        // Title shown at the top of the picker dialog
+                        putExtra(
+                            RingtoneManager.EXTRA_RINGTONE_TITLE,
+                            context.getString(R.string.settings_alarm_sound_title)
+                        )
+                        // Pre-select the currently chosen sound (or null for default)
+                        putExtra(
+                            RingtoneManager.EXTRA_RINGTONE_EXISTING_URI,
+                            if (alarmSoundUri != null) Uri.parse(alarmSoundUri) else null
+                        )
+                        // Show a "Default" option that maps to the system default alarm
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                        putExtra(
+                            RingtoneManager.EXTRA_RINGTONE_DEFAULT_URI,
+                            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                        )
+                        // Allow the user to pick "Silent" (no sound)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+                    }
+                    ringtonePickerLauncher.launch(intent)
+                }
+            )
+
             // ── Vibration toggle ──
             SettingsToggleItem(
                 title = stringResource(R.string.settings_vibration_title),
@@ -380,6 +461,7 @@ fun SettingsScreen(
                             SettingsRepository.DEFAULT_ALERT_DURATION_SECONDS.toFloat()
                         isSoundEnabled = SettingsRepository.DEFAULT_SOUND_ENABLED
                         isVibrationEnabled = SettingsRepository.DEFAULT_VIBRATION_ENABLED
+                        alarmSoundUri = SettingsRepository.DEFAULT_ALARM_SOUND_URI
 
                         // Dismiss the dialog
                         showResetDialog = false
@@ -497,6 +579,46 @@ private fun SettingsSliderItem(
             modifier = Modifier
                 .fillMaxWidth()
                 .semantics { this.contentDescription = contentDescription }
+        )
+    }
+}
+
+/**
+ * A single settings item with a title and summary that responds to clicks.
+ *
+ * ## Layout
+ * ```
+ * Title
+ * Summary text
+ * ```
+ *
+ * Used for settings that open a picker or dialog when tapped (e.g., the alarm
+ * sound picker). The entire row is clickable, giving a clear touch target.
+ *
+ * @param title   The name of the setting (e.g., "Alarm Sound").
+ * @param summary A description of the current value (e.g., "Current: Alarm Clock").
+ * @param onClick Callback when the user taps anywhere on this item.
+ */
+@Composable
+private fun SettingsClickableItem(
+    title: String,
+    summary: String,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Text(
+            text = summary,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

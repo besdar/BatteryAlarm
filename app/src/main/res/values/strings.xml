@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Battery Alarm</string>
+    <string name="app_name" translatable="false">Battery Alarm</string>
 
     <!-- Accessibility content descriptions -->
     <string name="cd_settings">Settings</string>
@@ -77,6 +77,12 @@
     <string name="settings_sound_summary_on">Alert sound is enabled</string>
     <string name="settings_sound_summary_off">Alert sound is disabled</string>
 
+    <!-- Alarm sound picker -->
+    <string name="settings_alarm_sound_title">Alarm Sound</string>
+    <string name="settings_alarm_sound_summary">Current: %1$s</string>
+    <string name="settings_alarm_sound_default">System default</string>
+    <string name="settings_alarm_sound_none">Silent</string>
+
     <!-- Vibration toggle -->
     <string name="settings_vibration_title">Vibration</string>
     <string name="settings_vibration_summary_on">Vibration is enabled</string>
@@ -100,4 +106,19 @@
     <string name="unit_percent">%1$d%%</string>
     <string name="unit_minutes">%1$d min</string>
     <string name="unit_seconds">%1$d sec</string>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- Update Checker Strings                                  -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+
+    <!-- Notification channel for update-available notifications -->
+    <string name="notification_channel_updates_name">App Updates</string>
+    <string name="notification_channel_updates_description">Notifies when a new version of the app is available</string>
+
+    <!-- Update notification content -->
+    <string name="notification_update_title">Update Available</string>
+    <string name="notification_update_content">Battery Alarm v%1$s is available. Tap to download.</string>
+
+    <!-- Accessibility content description for the update icon on the main screen -->
+    <string name="cd_update_available">App update available, tap to open download page</string>
 </resources>

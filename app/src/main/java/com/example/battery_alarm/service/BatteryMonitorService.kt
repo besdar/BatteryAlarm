@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
@@ -25,6 +26,7 @@ import androidx.core.app.NotificationCompat
 import com.example.battery_alarm.MainActivity
 import com.example.battery_alarm.R
 import com.example.battery_alarm.data.SettingsRepository
+import com.example.battery_alarm.data.SharedPreferencesStorage
 
 /**
  * BatteryMonitorService is a foreground service that continuously monitors the device's
@@ -149,6 +151,10 @@ class BatteryMonitorService : Service() {
     private var soundEnabled = true
     private var vibrationEnabled = true
 
+    // The user's chosen alarm sound URI (null = system default alarm sound).
+    // Loaded from SettingsRepository on service start.
+    private var alarmSoundUriString: String? = null
+
     // Timestamp of the last alert - used for rate limiting
     // We don't want to annoy users with too frequent alerts
     private var lastAlertTimeMs = 0L
@@ -232,9 +238,10 @@ class BatteryMonitorService : Service() {
         isRunning = true
 
         // ── Initialize settings from the repository ───────────
-        // The repository reads from SharedPreferences, which were written by the
-        // Settings screen. If the user never opened Settings, the defaults are used.
-        settingsRepository = SettingsRepository(this)
+        // The repository reads from SharedPreferencesStorage, which wraps Android's
+        // SharedPreferences behind a pure-Kotlin interface (SettingsStorage).
+        // If the user never opened Settings, the defaults are used.
+        settingsRepository = SettingsRepository(SharedPreferencesStorage(this))
         loadSettingsFromRepository()
 
         // Create notification channels (required for Android 8.0+)
@@ -339,12 +346,14 @@ class BatteryMonitorService : Service() {
         alertDurationMs = settingsRepository.alertDurationMs
         soundEnabled = settingsRepository.isSoundEnabled
         vibrationEnabled = settingsRepository.isVibrationEnabled
+        alarmSoundUriString = settingsRepository.alarmSoundUri
 
         Log.d(TAG, "Settings loaded: low=$lowThreshold%, high=$highThreshold%, " +
                 "alertInterval=${minAlertIntervalMs/1000}s, " +
                 "fullChargeInterval=${fullChargeAlertIntervalMs/1000}s, " +
                 "alertDuration=${alertDurationMs/1000}s, " +
-                "sound=$soundEnabled, vibration=$vibrationEnabled")
+                "sound=$soundEnabled, vibration=$vibrationEnabled, " +
+                "alarmSound=${alarmSoundUriString ?: "system default"}")
     }
 
     /**
@@ -709,9 +718,14 @@ class BatteryMonitorService : Service() {
      */
     private fun playAlertSound() {
         try {
-            // Get the default alarm sound URI
-            val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            // Use the user's chosen alarm sound URI if set, otherwise fall back
+            // to the system default alarm sound, then notification sound as last resort.
+            val alarmUri = if (alarmSoundUriString != null) {
+                Uri.parse(alarmSoundUriString)
+            } else {
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            }
 
             // Get the ringtone and play it
             val ringtone = RingtoneManager.getRingtone(this, alarmUri)

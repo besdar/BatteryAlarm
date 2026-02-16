@@ -36,6 +36,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     testOptions {
         unitTests {
@@ -56,7 +57,9 @@ dependencies {
     implementation(libs.materialIconsExtended)
     implementation(libs.composeAnimation)
     implementation(libs.composeRuntimeSaveable)
+    implementation(libs.workRuntimeKtx)
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinxCoroutinesTest)
     testImplementation(libs.robolectric)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

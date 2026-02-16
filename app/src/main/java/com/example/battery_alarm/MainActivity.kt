@@ -20,6 +20,7 @@ import androidx.core.content.ContextCompat
 import com.example.battery_alarm.ui.MainScreen
 import com.example.battery_alarm.ui.SettingsScreen
 import com.example.battery_alarm.ui.theme.BatteryAlarmTheme
+import com.example.battery_alarm.update.UpdateCheckWorker
 
 /**
  * MainActivity is the entry point of the Battery Alarm app.
@@ -106,6 +107,13 @@ class MainActivity : ComponentActivity() {
         // Check and request notification permission for Android 13+ (API 33+)
         // This must be done before setContent to ensure the state is correct on first render
         checkAndRequestNotificationPermission()
+
+        // Schedule the periodic update check worker (runs approximately every 30 days).
+        // This uses WorkManager with KEEP policy, so calling it multiple times
+        // (e.g., on every activity creation) is safe — it won't reset the schedule.
+        // The worker checks GitHub for a newer release and shows a notification if found.
+        // This is NOT configurable in Settings by design.
+        UpdateCheckWorker.schedule(applicationContext)
         
         setContent {
             BatteryAlarmTheme {

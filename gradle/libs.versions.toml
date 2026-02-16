@@ -1,5 +1,5 @@
 [versions]
-agp = "9.0.0"
+agp = "9.0.1"
 kotlin = "2.2.10"
 coreKtx = "1.17.0"
 junit = "4.13.2"
@@ -9,6 +9,8 @@ lifecycleRuntimeKtx = "2.9.2"
 activityCompose = "1.10.1"
 composeBom = "2024.09.00"
 robolectric = "4.14.1"
+workRuntime = "2.10.1"
+kotlinxCoroutinesTest = "1.10.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -30,6 +32,8 @@ materialIconsExtended = { group = "androidx.compose.material", name = "material-
 composeAnimation = { group = "androidx.compose.animation", name = "animation" }
 composeRuntimeSaveable = { group = "androidx.compose.runtime", name = "runtime-saveable" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+workRuntimeKtx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntime" }
+kotlinxCoroutinesTest = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

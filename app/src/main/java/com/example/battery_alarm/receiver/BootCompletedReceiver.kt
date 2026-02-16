@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.example.battery_alarm.service.BatteryMonitorService
 
 /**
  * BootCompletedReceiver listens for the device boot completion event and restarts
@@ -24,9 +23,26 @@ import com.example.battery_alarm.service.BatteryMonitorService
  * The solution:
  * 1. Register this BroadcastReceiver in AndroidManifest.xml to listen for BOOT_COMPLETED
  * 2. When device finishes booting, Android sends the BOOT_COMPLETED broadcast
- * 3. This receiver checks SharedPreferences - was the service enabled before reboot?
- * 4. If yes, restart the service automatically
+ * 3. This receiver checks [ServiceRestarter.isServiceEnabled] — was the service enabled?
+ * 4. If yes, calls [ServiceRestarter.restartService] to restart automatically
  * 5. Now the service is running again without user intervention!
+ *
+ * ## Abstraction: ServiceRestarter Interface
+ * Previously, this receiver directly accessed SharedPreferences and called
+ * `BatteryMonitorService.start(context)`. Now it delegates to a [ServiceRestarter]
+ * interface, which makes the decision logic testable without Robolectric:
+ *
+ * ```
+ * BootCompletedReceiver ──uses──▶ ServiceRestarter (interface)
+ *                                          │
+ *                                 ┌────────┴────────┐
+ *                                 ▼                  ▼
+ *                   AndroidServiceRestarter    FakeServiceRestarter
+ *                   (real app — Android)      (tests — plain Kotlin)
+ * ```
+ *
+ * Note: The receiver still extends Android's `BroadcastReceiver` (that can't be avoided),
+ * but the **business logic** (should we restart?) is now behind the interface.
  *
  * ## Important Notes:
  * - Requires RECEIVE_BOOT_COMPLETED permission in manifest
@@ -43,12 +59,21 @@ class BootCompletedReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "BootCompletedReceiver"
-        
-        // SharedPreferences constants - must match the ones used in MainScreen.kt
-        // These are the same keys used by the UI to persist service state
-        private const val PREFS_NAME = "battery_alarm_prefs"
-        private const val KEY_SERVICE_ENABLED = "service_enabled"
     }
+
+    /**
+     * Optional [ServiceRestarter] that can be injected for testing.
+     *
+     * When null (the default in production), [onReceive] creates an
+     * [AndroidServiceRestarter] using the broadcast's context. This allows:
+     * - **Production**: Receiver works normally with no extra setup.
+     * - **Testing**: Tests set this field to a [FakeServiceRestarter] before
+     *   calling [onReceive], enabling pure-JUnit testing of the decision logic.
+     *
+     * In a larger app you'd use a dependency injection framework (Hilt/Koin)
+     * instead of this manual approach, but for a small app this is sufficient.
+     */
+    var serviceRestarter: ServiceRestarter? = null
 
     /**
      * Called when a broadcast is received that this receiver is registered for.
@@ -56,6 +81,9 @@ class BootCompletedReceiver : BroadcastReceiver() {
      * In our case, this is called when the device finishes booting (BOOT_COMPLETED).
      * We check if the battery monitoring service was enabled before the reboot
      * and restart it if necessary.
+     *
+     * The actual decision logic is delegated to [ServiceRestarter], which can be
+     * a real Android implementation or a test fake.
      *
      * @param context The Context in which the receiver is running
      * @param intent The Intent being received (contains the action BOOT_COMPLETED)
@@ -83,19 +111,17 @@ class BootCompletedReceiver : BroadcastReceiver() {
 
         Log.d(TAG, "Device boot completed - checking if battery service should restart")
 
-        // Read the service enabled state from SharedPreferences
-        // This was saved by MainScreen when the user enabled/disabled the service
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val wasServiceEnabled = prefs.getBoolean(KEY_SERVICE_ENABLED, false)
+        // Use the injected ServiceRestarter if available (for testing),
+        // otherwise create the real Android implementation.
+        val restarter = serviceRestarter ?: AndroidServiceRestarter(context)
 
-        if (wasServiceEnabled) {
+        if (restarter.isServiceEnabled()) {
             // The service was enabled before reboot - restart it!
             Log.i(TAG, "Service was enabled before reboot - restarting BatteryMonitorService")
             
             try {
-                // Use the same start() method that the UI uses
-                // This ensures consistent behavior
-                BatteryMonitorService.start(context)
+                // Delegate the actual service start to the restarter
+                restarter.restartService()
                 Log.i(TAG, "BatteryMonitorService restart initiated successfully")
             } catch (e: Exception) {
                 // Log any errors but don't crash - the user can manually restart

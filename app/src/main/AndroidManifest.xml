@@ -21,6 +21,9 @@
     <!-- Permission to vibrate the device for alerts -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Permission to access the internet for checking app updates via GitHub API -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- Permission to receive boot completed broadcast -->
     <!-- This allows us to restart the battery monitoring service after device reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

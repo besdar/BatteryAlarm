@@ -1,21 +1,16 @@
 package com.example.battery_alarm.data
 
-import android.content.Context
-import android.content.SharedPreferences
 import org.junit.Assert.*
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.RuntimeEnvironment
-import org.robolectric.annotation.Config
 
 /**
  * Unit tests for [SettingsRepository].
  *
  * ## What Are We Testing?
  * SettingsRepository is the single source of truth for all user-configurable settings.
- * It wraps SharedPreferences and adds:
+ * It wraps a [SettingsStorage] backend and adds:
  *   - Default values (so the app works out-of-the-box)
  *   - Value clamping (so invalid values can't be stored)
  *   - Convenience millisecond conversions (used by the service)
@@ -23,14 +18,16 @@ import org.robolectric.annotation.Config
  *
  * We need to verify all of these behaviors work correctly.
  *
- * ## Why Robolectric?
- * SharedPreferences is an Android API — it needs a real `Context` to work.
- * Robolectric provides a fake Android environment that runs on the JVM (your
- * development machine), so these tests run fast without needing a phone or emulator.
+ * ## No Robolectric Needed! (Thanks to Dependency Inversion)
+ * Previously, these tests required Robolectric because SettingsRepository directly
+ * depended on Android's `Context` and `SharedPreferences`. After the refactoring,
+ * SettingsRepository depends on [SettingsStorage] — a pure Kotlin interface.
  *
- * The `@RunWith(RobolectricTestRunner::class)` annotation tells JUnit to use
- * Robolectric's custom test runner, which sets up the fake Android environment
- * before each test.
+ * We provide [FakeSettingsStorage] — a simple HashMap-based implementation — so
+ * these tests run as **plain JUnit tests** on the JVM. This means:
+ *   - **Faster**: No Robolectric startup overhead (milliseconds vs seconds).
+ *   - **Simpler**: No `@RunWith(RobolectricTestRunner::class)` or `@Config` needed.
+ *   - **More reliable**: No dependency on Robolectric's Android fakes.
  *
  * ## Test Naming Convention
  * Each test name follows the pattern:
@@ -38,27 +35,19 @@ import org.robolectric.annotation.Config
  * For example: `lowThreshold_defaultValue_returns20`
  * This makes it easy to understand what each test checks at a glance.
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(
-    // Use the latest SDK that Robolectric supports for maximum compatibility.
-    sdk = [34]
-)
 class SettingsRepositoryTest {
 
     // ── Test fixtures ────────────────────────────────────────────
     // These are set up fresh before EVERY test so tests don't affect each other.
 
-    /** The Android application context provided by Robolectric. */
-    private lateinit var context: Context
+    /**
+     * The fake storage backend — a simple HashMap that stores values in memory.
+     * This replaces the Robolectric-managed SharedPreferences from before.
+     */
+    private lateinit var fakeStorage: FakeSettingsStorage
 
     /** The repository instance we're testing. Created fresh for each test. */
     private lateinit var repository: SettingsRepository
-
-    /**
-     * The raw SharedPreferences file — used to verify that the repository
-     * actually writes values to storage (not just keeping them in memory).
-     */
-    private lateinit var prefs: SharedPreferences
 
     /**
      * Runs before EVERY test method.
@@ -66,28 +55,17 @@ class SettingsRepositoryTest {
      * @Before is a JUnit annotation that marks a setup method. JUnit calls this
      * before each @Test method, ensuring every test starts with a clean state.
      *
-     * We create a fresh Context, clear any leftover SharedPreferences data,
-     * and instantiate a new SettingsRepository.
+     * We create a fresh FakeSettingsStorage (empty HashMap) and a new
+     * SettingsRepository that uses it.
      */
     @Before
     fun setUp() {
-        // RuntimeEnvironment.getApplication() gives us a fake Application context
-        // that Robolectric manages. It behaves like a real Android Context.
-        context = RuntimeEnvironment.getApplication()
+        // Create a fresh fake storage — starts with an empty HashMap,
+        // so all reads will return defaults (just like cleared SharedPreferences).
+        fakeStorage = FakeSettingsStorage()
 
-        // Get a direct reference to the SharedPreferences file so we can
-        // verify what the repository actually wrote to disk.
-        prefs = context.getSharedPreferences(
-            SettingsRepository.PREFS_NAME,
-            Context.MODE_PRIVATE
-        )
-
-        // Clear all data before each test so previous tests don't leak state.
-        // This is critical for test isolation — each test must be independent.
-        prefs.edit().clear().commit()
-
-        // Create a fresh repository instance that reads from the clean SharedPreferences
-        repository = SettingsRepository(context)
+        // Create a fresh repository instance that reads from the clean fake storage
+        repository = SettingsRepository(fakeStorage)
     }
 
     // ═════════════════════════════════════════════════════════════
@@ -181,6 +159,17 @@ class SettingsRepositoryTest {
         )
     }
 
+    @Test
+    fun `alarmSoundUri - default value - returns null`() {
+        // When no alarm sound has been chosen, the default is null,
+        // which means "use the system default alarm sound".
+        val result = repository.alarmSoundUri
+        assertNull(
+            "Default alarm sound URI should be null (system default)",
+            result
+        )
+    }
+
     // ═════════════════════════════════════════════════════════════
     //  2. READ-WRITE ROUND-TRIP (normal values)
     // ═════════════════════════════════════════════════════════════
@@ -241,14 +230,37 @@ class SettingsRepositoryTest {
         assertTrue(repository.isServiceEnabled)
     }
 
+    @Test
+    fun `alarmSoundUri - set valid URI - reads back correctly`() {
+        // Simulate a user picking a system alarm sound
+        val testUri = "content://media/internal/audio/media/42"
+        repository.alarmSoundUri = testUri
+        assertEquals(testUri, repository.alarmSoundUri)
+    }
+
+    @Test
+    fun `alarmSoundUri - set to null - reads back null`() {
+        // First set a value, then clear it back to null (system default)
+        repository.alarmSoundUri = "content://media/internal/audio/media/42"
+        repository.alarmSoundUri = null
+        assertNull(
+            "Setting alarm sound to null should return null (system default)",
+            repository.alarmSoundUri
+        )
+    }
+
     // ═════════════════════════════════════════════════════════════
     //  3. PERSISTENCE (values survive new repository instances)
     // ═════════════════════════════════════════════════════════════
     //
-    // SharedPreferences persists data to an XML file on disk.
     // These tests verify that values written by one SettingsRepository
     // instance can be read by a NEW instance — simulating what happens
     // when the app is closed and reopened.
+    //
+    // With FakeSettingsStorage, "persistence" means both repository
+    // instances share the same FakeSettingsStorage (same HashMap).
+    // This mirrors real behavior where both would share the same
+    // SharedPreferences file.
     // ═════════════════════════════════════════════════════════════
 
     @Test
@@ -256,10 +268,11 @@ class SettingsRepositoryTest {
         // Given: we set a value using the first repository instance
         repository.lowThreshold = 45
 
-        // When: we create a brand new repository instance (simulating app restart)
-        val newRepository = SettingsRepository(context)
+        // When: we create a brand new repository instance pointing to the same storage
+        // (simulating app restart — both instances read from the same backing store)
+        val newRepository = SettingsRepository(fakeStorage)
 
-        // Then: the new instance should read the same value from SharedPreferences
+        // Then: the new instance should read the same value from storage
         assertEquals(
             "Value should persist across repository instances",
             45,
@@ -275,12 +288,29 @@ class SettingsRepositoryTest {
         repository.isServiceEnabled = true
 
         // When: we create a new repository (simulating app restart)
-        val newRepository = SettingsRepository(context)
+        val newRepository = SettingsRepository(fakeStorage)
 
         // Then: all values should be preserved
         assertFalse("Sound setting should persist", newRepository.isSoundEnabled)
         assertFalse("Vibration setting should persist", newRepository.isVibrationEnabled)
         assertTrue("Service enabled setting should persist", newRepository.isServiceEnabled)
+    }
+
+    @Test
+    fun `alarmSoundUri - persists across repository instances`() {
+        // Given: we set a custom alarm sound
+        val testUri = "content://media/internal/audio/media/99"
+        repository.alarmSoundUri = testUri
+
+        // When: we create a new repository (simulating app restart)
+        val newRepository = SettingsRepository(fakeStorage)
+
+        // Then: the alarm sound URI should persist
+        assertEquals(
+            "Alarm sound URI should persist across instances",
+            testUri,
+            newRepository.alarmSoundUri
+        )
     }
 
     // ═════════════════════════════════════════════════════════════
@@ -519,6 +549,7 @@ class SettingsRepositoryTest {
         repository.alertDurationSeconds = 45
         repository.isSoundEnabled = false
         repository.isVibrationEnabled = false
+        repository.alarmSoundUri = "content://media/internal/audio/media/42"
 
         // When: we reset to defaults
         repository.resetToDefaults()
@@ -557,6 +588,10 @@ class SettingsRepositoryTest {
             "Vibration should be re-enabled after reset",
             repository.isVibrationEnabled
         )
+        assertNull(
+            "Alarm sound URI should reset to null (system default)",
+            repository.alarmSoundUri
+        )
     }
 
     @Test
@@ -579,13 +614,14 @@ class SettingsRepositoryTest {
     }
 
     @Test
-    fun `resetToDefaults - reset is persisted to SharedPreferences`() {
+    fun `resetToDefaults - reset is persisted to storage`() {
         // Given: we change settings and then reset
         repository.lowThreshold = 50
         repository.resetToDefaults()
 
-        // When: we create a new repository instance (simulating app restart)
-        val newRepository = SettingsRepository(context)
+        // When: we create a new repository instance pointing to the same storage
+        // (simulating app restart)
+        val newRepository = SettingsRepository(fakeStorage)
 
         // Then: the new instance should see the default values (not 50)
         assertEquals(
@@ -596,46 +632,7 @@ class SettingsRepositoryTest {
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  7. SHARED PREFERENCES KEY CONSISTENCY
-    // ═════════════════════════════════════════════════════════════
-    //
-    // These tests verify that the repository writes to the correct
-    // SharedPreferences file and uses the expected keys.
-    // This matters because the BatteryMonitorService and
-    // BootCompletedReceiver read from the same file.
-    // ═════════════════════════════════════════════════════════════
-
-    @Test
-    fun `repository writes to the correct SharedPreferences file`() {
-        // When: we write a setting through the repository
-        repository.lowThreshold = 42
-
-        // Then: we should be able to read it from the raw SharedPreferences
-        // using the same file name ("battery_alarm_prefs")
-        val rawValue = prefs.getInt("low_threshold", -1)
-        assertEquals(
-            "Repository should write to 'battery_alarm_prefs' file",
-            42,
-            rawValue
-        )
-    }
-
-    @Test
-    fun `service enabled key matches the constant used by BootCompletedReceiver`() {
-        // The KEY_SERVICE_ENABLED constant is "service_enabled".
-        // BootCompletedReceiver also uses this key to check if the service
-        // should restart after boot. They MUST match.
-        repository.isServiceEnabled = true
-
-        val rawValue = prefs.getBoolean(SettingsRepository.KEY_SERVICE_ENABLED, false)
-        assertTrue(
-            "The service_enabled key must be accessible via the public constant",
-            rawValue
-        )
-    }
-
-    // ═════════════════════════════════════════════════════════════
-    //  8. COMPANION OBJECT CONSTANTS SANITY CHECKS
+    //  7. COMPANION OBJECT CONSTANTS SANITY CHECKS
     // ═════════════════════════════════════════════════════════════
     //
     // These tests verify that the constant values are sensible and
@@ -706,7 +703,7 @@ class SettingsRepositoryTest {
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  9. OVERWRITE BEHAVIOR
+    //  8. OVERWRITE BEHAVIOR
     // ═════════════════════════════════════════════════════════════
     //
     // Verify that writing a new value overwrites the old one
