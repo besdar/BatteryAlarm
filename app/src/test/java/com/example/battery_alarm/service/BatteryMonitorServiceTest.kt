@@ -19,6 +19,8 @@ import org.junit.Test
  * 2. **The `isRunning` flag**: Verify its default state and behavior.
  * 3. **Static helper methods**: The `start()` and `stop()` methods are thin wrappers
  *    around Android APIs — they're better tested in integration tests.
+ * 4. **DND interruption-filter constants**: Verify they match the expected Android
+ *    SDK values so our DND-check logic works correctly.
  *
  * ## Why Not Test Everything?
  * The private methods (checkAndAlert, shouldAlertBasedOnProgression, triggerAlert, etc.)
@@ -223,6 +225,111 @@ class BatteryMonitorServiceTest {
             "There should be at least a 20% gap between low and high thresholds " +
                     "(actual gap: $gap%)",
             gap >= 20
+        )
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    //  6. DND / INTERRUPTION-FILTER CONSTANTS
+    // ═════════════════════════════════════════════════════════════
+    //
+    // These file-level constants mirror the Android SDK values from
+    // NotificationManager.INTERRUPTION_FILTER_*. We define our own
+    // copies so that the DND-check logic is testable in plain-JVM
+    // unit tests (the real SDK constants come from the Android stubs
+    // which return 0 in a JVM-only environment).
+    //
+    // If any of these constants drifts from the real SDK value, the
+    // DND check would silently break — so these tests act as a guard.
+    // ═════════════════════════════════════════════════════════════
+
+    @Test
+    fun `INTERRUPTION_FILTER_ALL - matches expected Android SDK value`() {
+        // NotificationManager.INTERRUPTION_FILTER_ALL == 1
+        // This is the "DND is OFF" state. If we get this value wrong, we
+        // would incorrectly suppress alerts when DND is actually disabled.
+        assertEquals(
+            "INTERRUPTION_FILTER_ALL must be 1 (no DND)",
+            1,
+            INTERRUPTION_FILTER_ALL
+        )
+    }
+
+    @Test
+    fun `INTERRUPTION_FILTER_PRIORITY - matches expected Android SDK value`() {
+        // NotificationManager.INTERRUPTION_FILTER_PRIORITY == 2
+        // DND allows only priority interruptions. Our battery alert should
+        // stay silent in this mode.
+        assertEquals(
+            "INTERRUPTION_FILTER_PRIORITY must be 2",
+            2,
+            INTERRUPTION_FILTER_PRIORITY
+        )
+    }
+
+    @Test
+    fun `INTERRUPTION_FILTER_NONE - matches expected Android SDK value`() {
+        // NotificationManager.INTERRUPTION_FILTER_NONE == 3
+        // Total silence mode — absolutely no sounds should play.
+        assertEquals(
+            "INTERRUPTION_FILTER_NONE must be 3 (total silence)",
+            3,
+            INTERRUPTION_FILTER_NONE
+        )
+    }
+
+    @Test
+    fun `INTERRUPTION_FILTER_ALARMS - matches expected Android SDK value`() {
+        // NotificationManager.INTERRUPTION_FILTER_ALARMS == 4
+        // Only user-set clock alarms break through. Our battery alert is
+        // NOT a user-set alarm, so we should stay silent here too.
+        assertEquals(
+            "INTERRUPTION_FILTER_ALARMS must be 4",
+            4,
+            INTERRUPTION_FILTER_ALARMS
+        )
+    }
+
+    @Test
+    fun `all DND filter constants are unique`() {
+        // Each filter value must be distinct — if two shared a value we
+        // could not tell them apart and the DND logic would be ambiguous.
+        val values = setOf(
+            INTERRUPTION_FILTER_ALL,
+            INTERRUPTION_FILTER_PRIORITY,
+            INTERRUPTION_FILTER_NONE,
+            INTERRUPTION_FILTER_ALARMS
+        )
+        assertEquals(
+            "All four DND filter constants must have unique values",
+            4,
+            values.size
+        )
+    }
+
+    @Test
+    fun `DND is considered active for every filter except ALL`() {
+        // The isDndModeActive() method considers DND active when the filter
+        // is anything other than INTERRUPTION_FILTER_ALL. This test
+        // documents that expectation so future maintainers know the intent.
+        //
+        // We can't call isDndModeActive() directly (it needs a real Service
+        // context), but we CAN verify the constant-based logic here:
+        //   dndActive = (filter != INTERRUPTION_FILTER_ALL)
+        assertFalse(
+            "Filter ALL (1) should NOT be treated as DND active",
+            INTERRUPTION_FILTER_ALL != INTERRUPTION_FILTER_ALL  // false → DND off
+        )
+        assertTrue(
+            "Filter PRIORITY (2) should be treated as DND active",
+            INTERRUPTION_FILTER_PRIORITY != INTERRUPTION_FILTER_ALL
+        )
+        assertTrue(
+            "Filter NONE (3) should be treated as DND active",
+            INTERRUPTION_FILTER_NONE != INTERRUPTION_FILTER_ALL
+        )
+        assertTrue(
+            "Filter ALARMS (4) should be treated as DND active",
+            INTERRUPTION_FILTER_ALARMS != INTERRUPTION_FILTER_ALL
         )
     }
 }

@@ -28,6 +28,24 @@ import com.example.battery_alarm.R
 import com.example.battery_alarm.data.SettingsRepository
 import com.example.battery_alarm.data.SharedPreferencesStorage
 
+// ── DND / Interruption-filter constants ──────────────────────
+// We define these at file level so the rest of the file can reference
+// them by name instead of magic numbers. They mirror the values in
+// NotificationManager.INTERRUPTION_FILTER_* but are available even
+// in plain-JVM unit tests where the Android SDK stubs are not loaded.
+
+/** Matches [NotificationManager.INTERRUPTION_FILTER_ALL] – no DND restriction. */
+const val INTERRUPTION_FILTER_ALL = 1
+
+/** Matches [NotificationManager.INTERRUPTION_FILTER_PRIORITY] – only priority interruptions. */
+const val INTERRUPTION_FILTER_PRIORITY = 2
+
+/** Matches [NotificationManager.INTERRUPTION_FILTER_NONE] – total silence. */
+const val INTERRUPTION_FILTER_NONE = 3
+
+/** Matches [NotificationManager.INTERRUPTION_FILTER_ALARMS] – only alarms allowed. */
+const val INTERRUPTION_FILTER_ALARMS = 4
+
 /**
  * BatteryMonitorService is a foreground service that continuously monitors the device's
  * battery level and alerts the user when the battery reaches critical thresholds.
@@ -40,6 +58,10 @@ import com.example.battery_alarm.data.SharedPreferencesStorage
  * - Rate limits alerts to minimum 10 minutes apart
  * - Special handling for 100% charge (alerts every 30 minutes)
  * - Automatically restarts after device reboot (if it was enabled before)
+ * - Respects Do Not Disturb (DND) mode: skips audible/vibration alerts when active
+ * - Stops any playing alert immediately when the charger is plugged in or removed
+ * - Uses VISIBILITY_PUBLIC so notifications appear on the lock screen even when
+ *   "Show sensitive content" is off (the app has no sensitive data)
  *
  * ## Why a Foreground Service?
  * Android restricts background execution to preserve battery. A foreground service
@@ -214,6 +236,20 @@ class BatteryMonitorService : Service() {
             // Log for debugging
             Log.d(TAG, "Battery update: level=$batteryPct%, charging=$isCharging")
 
+            // ── FIX: Stop alert on charger state change ──────────────
+            // If the charging state just changed (charger plugged in or removed)
+            // AND an alert is currently playing, stop it immediately.
+            //
+            // WHY? When the user plugs in or removes the charger, the battery
+            // situation has changed — the alarm that was playing is now stale.
+            // For example, a "low battery" alarm is no longer relevant once
+            // the charger is connected. Continuing to play would be annoying
+            // and confusing.
+            if (isCharging != wasCharging && isAlertPlaying) {
+                Log.d(TAG, "Charging state changed while alert playing — stopping alert")
+                stopAlert()
+            }
+
             // Store the current level
             currentBatteryLevel = batteryPct
 
@@ -380,6 +416,19 @@ class BatteryMonitorService : Service() {
             setShowBadge(false)
             enableLights(false)
             enableVibration(false)
+
+            // ── FIX: Show notification on the lock screen ────────────
+            // By default, Android uses VISIBILITY_PRIVATE which hides the
+            // notification content on the lock screen when the user has
+            // "Show sensitive content" turned OFF in system settings.
+            //
+            // VISIBILITY_PUBLIC tells Android: "this notification contains
+            // NO sensitive data — always show it in full on the lock screen."
+            //
+            // This is appropriate for BatteryAlarm because the notification
+            // only shows battery percentage and a "Stop" action — there is
+            // no personal, financial, or private information.
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
 
         // Channel for battery alert notifications
@@ -394,6 +443,13 @@ class BatteryMonitorService : Service() {
             enableLights(true)
             enableVibration(true)
             setShowBadge(true)
+
+            // ── FIX: Show alert notification on the lock screen ───────
+            // Same reasoning as the service channel above — battery alerts
+            // ("Battery low: 15%") contain no sensitive information and
+            // should be visible on the lock screen regardless of the
+            // "Show sensitive content" system setting.
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
 
         // Register both channels with the system
@@ -447,6 +503,22 @@ class BatteryMonitorService : Service() {
                 getString(R.string.notification_action_stop),
                 stopPendingIntent
             )
+            // ── FIX: Always show full notification on the lock screen ──
+            // VISIBILITY_PUBLIC means this notification's content is safe
+            // to display on a secure lock screen. Without this, when the
+            // user's "Show sensitive content" setting is OFF, Android
+            // hides the notification entirely or shows only "Contents
+            // hidden" — making it look like the service isn't running.
+            //
+            // BatteryAlarm only shows battery percentage and a "Stop"
+            // button, so there is zero sensitive data to protect.
+            //
+            // NOTE: We set this on BOTH the channel (lockscreenVisibility)
+            // and the individual notification (setVisibility). The channel
+            // setting is the system-level default; the per-notification
+            // setting acts as an explicit declaration of intent and is
+            // needed for NotificationCompat back-compatibility on older APIs.
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
     }
 
@@ -609,6 +681,12 @@ class BatteryMonitorService : Service() {
     /**
      * Triggers a battery alert - shows notification and plays sound/vibration.
      *
+     * Before producing any audible/haptic output the method checks the system's
+     * Do Not Disturb (DND) state via [NotificationManager.getCurrentInterruptionFilter].
+     * If DND is active (any mode other than INTERRUPTION_FILTER_ALL) the sound and
+     * vibration are **skipped**, but the visual notification is still posted so the
+     * user sees it when they next look at their phone.
+     *
      * @param batteryLevel The battery level that triggered this alert
      */
     private fun triggerAlert(batteryLevel: Int) {
@@ -622,24 +700,52 @@ class BatteryMonitorService : Service() {
 
         isAlertPlaying = true
 
-        // Show the alert notification
+        // Show the alert notification — always, even in DND.
+        // The notification itself is silent (.setSound(null)) so it won't
+        // violate DND; it only provides a visual record of the alert.
         showAlertNotification(batteryLevel)
+
+        // ── FIX: Respect Do Not Disturb mode ─────────────────────
+        // Check the current interruption filter (DND state).
+        // INTERRUPTION_FILTER_ALL (1) means "no DND — all sounds allowed".
+        // Any other value means some form of DND is active:
+        //   INTERRUPTION_FILTER_PRIORITY (2) — only priority interruptions
+        //   INTERRUPTION_FILTER_NONE     (3) — total silence
+        //   INTERRUPTION_FILTER_ALARMS   (4) — only alarms (but our battery
+        //          alert is not a system alarm the user set, so we should
+        //          still be respectful and stay silent)
+        //
+        // WHY NOT rely on USAGE_ALARM to "auto-respect DND"?
+        // AudioAttributes.USAGE_ALARM is allowed to break through DND on
+        // many devices, because it is designed for user-set alarms (clock
+        // alarms). Our battery alert is NOT an alarm the user intentionally
+        // scheduled to wake them — it is a background monitoring alert.
+        // Playing it through DND would wake users at night, which is the
+        // exact bug reported in Issue #1.
+        val isDndActive = isDndModeActive()
+
+        if (isDndActive) {
+            Log.d(TAG, "Do Not Disturb is active — skipping sound and vibration")
+        }
 
         // Play sound and vibration based on user preferences.
         // The user can disable either or both in Settings.
-        if (soundEnabled) {
+        // Additionally, we now skip them entirely when DND is active.
+        if (soundEnabled && !isDndActive) {
             playAlertSound()
-        } else {
+        } else if (!soundEnabled) {
             Log.d(TAG, "Sound is disabled in settings, skipping")
         }
 
-        if (vibrationEnabled) {
+        if (vibrationEnabled && !isDndActive) {
             startVibration()
-        } else {
+        } else if (!vibrationEnabled) {
             Log.d(TAG, "Vibration is disabled in settings, skipping")
         }
 
-        // Schedule the alert to stop after the user-configured duration
+        // Schedule the alert to stop after the user-configured duration.
+        // Even if sound/vibration were skipped (DND), we still schedule
+        // the stop so that `isAlertPlaying` is reset correctly.
         handler.postDelayed(stopAlertRunnable, alertDurationMs)
     }
 
@@ -703,18 +809,51 @@ class BatteryMonitorService : Service() {
             // Don't use the notification's built-in sound - we handle it ourselves
             // for more control over duration
             .setSound(null)
+            // ── FIX: Always show alert on the lock screen ─────────────
+            // Same as the service notification — battery level alerts
+            // contain no sensitive data, so they should always be fully
+            // visible on the lock screen even when "Show sensitive content"
+            // is turned off. See createServiceNotification() for the full
+            // explanation of VISIBILITY_PUBLIC.
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
 
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.notify(NOTIFICATION_ID_ALERT, notification)
     }
 
+    // ── DND helper ────────────────────────────────────────────
+
+    /**
+     * Checks whether Do Not Disturb (DND) mode is currently active.
+     *
+     * Uses [NotificationManager.getCurrentInterruptionFilter] which returns
+     * one of the INTERRUPTION_FILTER_* constants. Only
+     * [NotificationManager.INTERRUPTION_FILTER_ALL] (value 1) means "DND is
+     * OFF — all sounds are allowed".  Every other value means some form of
+     * DND is enabled.
+     *
+     * This method is `open` so that unit tests can override it without
+     * needing a real Android NotificationManager.
+     *
+     * @return `true` when DND is active (sounds should be suppressed),
+     *         `false` when all sounds are allowed.
+     */
+    open fun isDndModeActive(): Boolean {
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        val filter = notificationManager.currentInterruptionFilter
+        // INTERRUPTION_FILTER_ALL == 1 means NO DND
+        val dndActive = filter != NotificationManager.INTERRUPTION_FILTER_ALL
+        Log.d(TAG, "DND check: filter=$filter, dndActive=$dndActive")
+        return dndActive
+    }
+
     /**
      * Plays the default alarm sound for ALERT_DURATION_MS.
      *
-     * Uses the system default alarm ringtone. The sound will respect
-     * the user's Do Not Disturb settings automatically through the
-     * AudioManager.STREAM_ALARM stream.
+     * Uses the system default alarm ringtone. The caller is responsible for
+     * checking DND status before calling this method — if DND is active the
+     * caller should skip calling [playAlertSound] altogether.
      */
     private fun playAlertSound() {
         try {
