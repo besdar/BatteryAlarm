@@ -10,9 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioAttributes
-import android.media.AudioManager
 import android.media.RingtoneManager
-import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
@@ -23,6 +21,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.net.toUri
 import com.example.battery_alarm.MainActivity
 import com.example.battery_alarm.R
 import com.example.battery_alarm.data.SettingsRepository
@@ -105,18 +104,20 @@ class BatteryMonitorService : Service() {
         // Intent action to dismiss an alert (stop sound/vibration)
         const val ACTION_DISMISS_ALERT = "com.example.battery_alarm.DISMISS_ALERT"
 
+        // Intent action to apply the latest persisted settings to an active service.
+        const val ACTION_RELOAD_SETTINGS = "com.example.battery_alarm.RELOAD_SETTINGS"
+
         /**
          * Static flag to track whether the service is currently running.
          * 
          * ## Why is this needed?
-         * After a device reboot, the service is stopped but SharedPreferences still shows
-         * "service_enabled = true". We need a way to check the ACTUAL service state
-         * to sync the UI properly when the app opens.
+         * This is used only to decide whether a live settings reload can be sent to an
+         * active service. It is not the user's monitoring preference.
          * 
          * This flag is:
          * - Set to true in onCreate()
          * - Set to false in onDestroy()
-         * - Checked by UI to determine actual service state
+         * - Checked by [reload] before sending a reload intent
          * 
          * Note: @Volatile ensures visibility across threads
          */
@@ -144,6 +145,17 @@ class BatteryMonitorService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, BatteryMonitorService::class.java)
             context.stopService(intent)
+        }
+
+        /** Applies saved settings without starting monitoring when it is off. */
+        fun reload(context: Context) {
+            if (!isRunning) return
+
+            context.startService(
+                Intent(context, BatteryMonitorService::class.java).apply {
+                    action = ACTION_RELOAD_SETTINGS
+                }
+            )
         }
     }
 
@@ -199,6 +211,8 @@ class BatteryMonitorService : Service() {
 
     // Current battery level (0-100)
     private var currentBatteryLevel = -1
+
+    private var batteryReceiverRegistered = false
 
     // Runnable to stop the alert after ALERT_DURATION_MS
     private val stopAlertRunnable = Runnable {
@@ -270,7 +284,7 @@ class BatteryMonitorService : Service() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
 
-        // Mark the service as running - this is checked by the UI to sync state
+        // Mark the service as running so settings changes can be reloaded in place.
         isRunning = true
 
         // ── Initialize settings from the repository ───────────
@@ -299,6 +313,7 @@ class BatteryMonitorService : Service() {
         when (intent?.action) {
             ACTION_STOP_SERVICE -> {
                 // User clicked "Stop" on the notification
+                settingsRepository.isServiceEnabled = false
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -307,19 +322,26 @@ class BatteryMonitorService : Service() {
                 stopAlert()
                 return START_STICKY
             }
+            ACTION_RELOAD_SETTINGS -> {
+                loadSettingsFromRepository()
+                updateServiceNotification()
+                return START_STICKY
+            }
         }
 
         // Start as a foreground service with a persistent notification
         // This must be called within 5 seconds of startForegroundService()
         startForeground(NOTIFICATION_ID_SERVICE, createServiceNotification())
 
-        // Register for battery change broadcasts
-        // Using RECEIVER_NOT_EXPORTED for security (Android 13+)
-        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(batteryReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(batteryReceiver, filter)
+        if (!batteryReceiverRegistered) {
+            // Register for battery change broadcasts using RECEIVER_NOT_EXPORTED on Android 13+.
+            val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(batteryReceiver, filter, RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(batteryReceiver, filter)
+            }
+            batteryReceiverRegistered = true
         }
 
         // START_STICKY tells Android to recreate the service if it's killed
@@ -334,19 +356,21 @@ class BatteryMonitorService : Service() {
     override fun onDestroy() {
         Log.d(TAG, "Service onDestroy")
 
-        // Mark the service as not running - this is checked by the UI to sync state
+        // Mark the service as not running so later settings changes do not start it again.
         isRunning = false
 
         // Stop any ongoing alert
         stopAlert()
 
         // Unregister the battery receiver to prevent leaks
-        try {
-            unregisterReceiver(batteryReceiver)
-        } catch (e: IllegalArgumentException) {
-            // Receiver wasn't registered - can happen if service is destroyed
-            // before onStartCommand completed
-            Log.w(TAG, "Receiver not registered: ${e.message}")
+        if (batteryReceiverRegistered) {
+            try {
+                unregisterReceiver(batteryReceiver)
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Receiver not registered: ${e.message}")
+            } finally {
+                batteryReceiverRegistered = false
+            }
         }
 
         // Remove any pending callbacks
@@ -368,11 +392,8 @@ class BatteryMonitorService : Service() {
      * ## Why Copy Instead of Reading on Every Use?
      * - Battery change broadcasts can fire frequently; reading SharedPreferences
      *   each time would add unnecessary I/O overhead.
-     * - By loading once at startup, we keep the hot path (battery change events) fast.
-     * - If the user changes settings while the service is running, the service
-     *   will pick up the new values next time it restarts. For an alarm app this
-     *   is acceptable — the user can toggle the service off/on to apply changes
-     *   immediately.
+     * - The service loads settings at startup and on [ACTION_RELOAD_SETTINGS], so the
+     *   hot battery-change path stays free of storage reads while active changes apply live.
      */
     private fun loadSettingsFromRepository() {
         lowThreshold = settingsRepository.lowThreshold
@@ -833,13 +854,10 @@ class BatteryMonitorService : Service() {
      * OFF — all sounds are allowed".  Every other value means some form of
      * DND is enabled.
      *
-     * This method is `open` so that unit tests can override it without
-     * needing a real Android NotificationManager.
-     *
      * @return `true` when DND is active (sounds should be suppressed),
      *         `false` when all sounds are allowed.
      */
-    open fun isDndModeActive(): Boolean {
+    fun isDndModeActive(): Boolean {
         val notificationManager = getSystemService(NotificationManager::class.java)
         val filter = notificationManager.currentInterruptionFilter
         // INTERRUPTION_FILTER_ALL == 1 means NO DND
@@ -859,8 +877,9 @@ class BatteryMonitorService : Service() {
         try {
             // Use the user's chosen alarm sound URI if set, otherwise fall back
             // to the system default alarm sound, then notification sound as last resort.
-            val alarmUri = if (alarmSoundUriString != null) {
-                Uri.parse(alarmSoundUriString)
+            val selectedAlarmSoundUri = alarmSoundUriString
+            val alarmUri = if (selectedAlarmSoundUri != null) {
+                selectedAlarmSoundUri.toUri()
             } else {
                 RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                     ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -920,13 +939,7 @@ class BatteryMonitorService : Service() {
             // Create vibration effect with pattern, repeating from index 1
             val effect = VibrationEffect.createWaveform(pattern, 1)
 
-            // Start vibration with alarm attributes (respects DND)
-            val audioAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ALARM)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build()
-
-            vibrator.vibrate(effect, audioAttributes)
+            vibrator.vibrate(effect)
 
             currentVibrator = vibrator
             Log.d(TAG, "Started vibration")

@@ -1,15 +1,14 @@
 package com.example.battery_alarm.ui
 
-import android.content.Intent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -18,8 +17,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,16 +31,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.example.battery_alarm.BuildConfig
 import com.example.battery_alarm.R
 import com.example.battery_alarm.data.SettingsRepository
 import com.example.battery_alarm.data.SharedPreferencesStorage
 import com.example.battery_alarm.service.BatteryMonitorService
 import com.example.battery_alarm.ui.theme.BatteryAlarmTheme
-import com.example.battery_alarm.update.GitHubUpdateChecker
-import com.example.battery_alarm.update.UpdateChecker
-import com.example.battery_alarm.update.VersionComparator
-import androidx.core.net.toUri
 
 /**
  * Main screen composable for the Battery Alarm app.
@@ -63,15 +57,12 @@ import androidx.core.net.toUri
  * - The service runs independently of the activity. Even if the app is closed,
  *   the service continues monitoring battery levels.
  * - We use SharedPreferences to persist the service enabled state across app restarts.
- * - The UI state is synchronized with the ACTUAL service state on composition.
+ * - The UI state represents the user's persisted monitoring preference.
  * 
  * ## Reboot Handling:
- * - After a device reboot, the service might not be running even if SharedPreferences
- *   says "enabled = true" (because the BootCompletedReceiver might not have fired yet,
- *   or there was an error starting the service).
- * - We check `BatteryMonitorService.isRunning` to get the ACTUAL service state.
- * - If there's a mismatch, we sync SharedPreferences with the actual state.
- * - This prevents the UI from showing "ON" when the service isn't actually running.
+ * - The BootCompletedReceiver reads the persisted monitoring preference and restarts
+ *   the service after boot.
+ * - A temporary process-local service state must never overwrite that preference.
  * 
  * ## Notification Permission (Android 13+):
  * - On Android 13 (API 33) and above, we need runtime permission to show notifications
@@ -79,29 +70,20 @@ import androidx.core.net.toUri
  * - If permission is not granted, we show a warning and request it when user tries to enable service
  * - The `onRequestNotificationPermission` callback triggers the permission request dialog
  *
- * ## Update Check (GitHub Releases):
- * - On every composition, the screen launches a coroutine to check for updates
- *   via the GitHub Releases API using [UpdateChecker].
- * - If a newer version is found, an update icon appears in the top-start corner.
- * - Tapping the icon opens the GitHub releases page in the default browser.
- * - The [updateChecker] parameter defaults to [GitHubUpdateChecker] in production
- *   but can be replaced with a fake in tests/previews.
- * 
  * @param modifier Modifier for the root composable
  * @param hasNotificationPermission Whether the app has permission to show notifications (passed from MainActivity)
+ * @param showNotificationPermissionRetry Whether to show the retry action after a denied request.
  * @param onRequestNotificationPermission Callback to request notification permission when needed
  * @param onNavigateToSettings Callback invoked when the user taps the Settings gear icon.
  *                              MainActivity handles the actual screen switch.
- * @param updateChecker The [UpdateChecker] implementation to use for fetching the latest version.
- *                       Defaults to [GitHubUpdateChecker] (production). Pass a fake for testing.
  */
 @Composable
 fun MainScreen(
     modifier: Modifier = Modifier,
     hasNotificationPermission: Boolean = true,
+    showNotificationPermissionRetry: Boolean = false,
     onRequestNotificationPermission: () -> Unit = {},
-    onNavigateToSettings: () -> Unit = {},
-    updateChecker: UpdateChecker = remember { GitHubUpdateChecker() }
+    onNavigateToSettings: () -> Unit = {}
 ) {
     // Get context for starting/stopping the service
     val context = LocalContext.current
@@ -111,60 +93,8 @@ fun MainScreen(
     // doesn't directly touch Android's SharedPreferences anymore.
     val repository = remember { SettingsRepository(SharedPreferencesStorage(context)) }
 
-    // Get the saved preference value through the repository
-    val savedServiceEnabled = repository.isServiceEnabled
-    
-    // Get the ACTUAL service running state
-    // This is important after a reboot - SharedPreferences might say "enabled"
-    // but the service might not actually be running yet
-    val actualServiceRunning = BatteryMonitorService.isRunning
-    
-    // Determine the initial state:
-    // - If service is running, UI should show ON
-    // - If service is NOT running but was enabled, we have two choices:
-    //   1. Try to start it (but this might fail without notification permission)
-    //   2. Show the actual state (OFF) and let user tap to enable
-    // We choose option 2 to avoid confusing the user and to respect permission flow
-    val initialState = actualServiceRunning
-    
-    // If there's a mismatch between saved state and actual state, sync via repository
-    // This handles the case where:
-    // - Service was enabled, device rebooted, but service didn't restart properly
-    // - Now the repository says "enabled" but service isn't running
-    // We update the repository to match reality so the UI is consistent
-    if (savedServiceEnabled != actualServiceRunning) {
-        // Update repository to match the actual service state
-        repository.isServiceEnabled = actualServiceRunning
-        android.util.Log.d("MainScreen", 
-            "Synced settings with actual service state: " +
-            "saved=$savedServiceEnabled, actual=$actualServiceRunning")
-    }
-
-    // Initialize state from the ACTUAL service state (not just saved settings)
-    // rememberSaveable survives configuration changes
     var isServiceEnabled by rememberSaveable {
-        mutableStateOf(initialState)
-    }
-
-    // ── Update Check State ──────────────────────────────────
-    // Tracks whether a newer version is available on GitHub.
-    // `rememberSaveable` ensures the state survives configuration changes
-    // (rotation, theme change) without re-fetching from the network.
-    var isUpdateAvailable by rememberSaveable { mutableStateOf(false) }
-
-    // LaunchedEffect keyed on Unit runs exactly once per composition lifecycle.
-    // It fires a coroutine to check GitHub for the latest release version.
-    // If the network call fails, isUpdateAvailable stays false (no icon shown).
-    LaunchedEffect(Unit) {
-        val latestVersion = updateChecker.getLatestVersion()
-        if (latestVersion != null) {
-            // Compare the fetched version with the app's current version
-            // (BuildConfig.VERSION_NAME is set in build.gradle.kts)
-            isUpdateAvailable = VersionComparator.isNewerVersion(
-                currentVersion = BuildConfig.VERSION_NAME,
-                latestVersion = latestVersion
-            )
-        }
+        mutableStateOf(repository.isServiceEnabled)
     }
 
     // Animated colors for a smoother, more delightful state transition
@@ -185,32 +115,6 @@ fun MainScreen(
     val scale by animateFloatAsState(targetValue = if (isServiceEnabled) 1.05f else 1f, label = "fabScale")
 
     Box(modifier = modifier.fillMaxSize()) {
-        // ── Update Available Icon (top-start corner) ─────────
-        // Shown only when a newer version is detected on GitHub.
-        // Tapping it opens the GitHub releases page in the default browser
-        // so the user can download the latest APK.
-        if (isUpdateAvailable) {
-            IconButton(
-                onClick = {
-                    // Open the GitHub releases page in the default browser
-                    val browserIntent = Intent(
-                        Intent.ACTION_VIEW,
-                        GitHubUpdateChecker.GITHUB_LATEST_RELEASE_PAGE_URL.toUri()
-                    )
-                    context.startActivity(browserIntent)
-                },
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(16.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.SystemUpdate,
-                    contentDescription = stringResource(R.string.cd_update_available),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-
         // Settings button at the top-end
         // When tapped, it triggers the navigation callback provided by MainActivity
         IconButton(
@@ -283,18 +187,32 @@ fun MainScreen(
             )
         }
 
-        // Status text below
-        Text(
-            text = stringResource(
-                R.string.battery_monitoring_status,
-                stringResource(if (isServiceEnabled) R.string.on_label else R.string.off_label)
-            ),
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(32.dp)
-        )
+        ) {
+            Text(
+                text = stringResource(
+                    R.string.battery_monitoring_status,
+                    stringResource(if (isServiceEnabled) R.string.on_label else R.string.off_label)
+                ),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            if (showNotificationPermissionRetry && !hasNotificationPermission) {
+                Text(
+                    text = stringResource(R.string.notification_permission_required),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+                TextButton(onClick = onRequestNotificationPermission) {
+                    Text(stringResource(R.string.notification_permission_retry))
+                }
+            }
+        }
     }
 }
 

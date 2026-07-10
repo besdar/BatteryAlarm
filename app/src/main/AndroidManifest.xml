@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Permission to create and run foreground services -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -11,13 +10,6 @@
     <!-- Permission to post notifications (required for Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
-    <!-- Permission to prevent device from sleeping while monitoring -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    
-    <!-- Permission to receive battery changed broadcasts -->
-    <uses-permission android:name="android.permission.BATTERY_STATS" 
-        tools:ignore="ProtectedPermissions" />
-
     <!-- Permission to vibrate the device for alerts -->
     <uses-permission android:name="android.permission.VIBRATE" />
 

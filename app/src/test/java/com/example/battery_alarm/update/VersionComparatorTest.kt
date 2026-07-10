@@ -1,5 +1,6 @@
 package com.example.battery_alarm.update
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,6 +22,33 @@ import org.junit.Test
  * 3. Edge cases (empty strings, non-numeric segments, large numbers)
  */
 class VersionComparatorTest {
+
+    @Test
+    fun `GitHub tag with lowercase v is normalized`() {
+        assertEquals("1.2.3", GitHubUpdateChecker.normalizeTag("v1.2.3"))
+    }
+
+    @Test
+    fun `GitHub tag with uppercase V is normalized`() {
+        assertEquals("1.2.3", GitHubUpdateChecker.normalizeTag("V1.2.3"))
+    }
+
+    @Test
+    fun `GitHub tag without a prefix is preserved`() {
+        assertEquals("1.2.3", GitHubUpdateChecker.normalizeTag("1.2.3"))
+    }
+
+    @Test
+    fun `GitHub endpoints target the BatteryAlarm repository`() {
+        assertEquals(
+            "https://api.github.com/repos/besdar/BatteryAlarm/releases/latest",
+            GitHubUpdateChecker.GITHUB_LATEST_RELEASE_URL
+        )
+        assertEquals(
+            "https://github.com/besdar/BatteryAlarm/releases/latest",
+            GitHubUpdateChecker.GITHUB_LATEST_RELEASE_PAGE_URL
+        )
+    }
 
     // ─────────────────────────────────────────────────────────
     //  Basic comparisons: newer, same, older

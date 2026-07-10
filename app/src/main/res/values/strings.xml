@@ -10,6 +10,8 @@
     <string name="battery_monitoring_status">Battery monitoring is %1$s</string>
     <string name="on_label">ON</string>
     <string name="off_label">OFF</string>
+    <string name="notification_permission_required">Allow notifications to enable monitoring.</string>
+    <string name="notification_permission_retry">Allow notifications</string>
 
     <!-- Notification Channel Names and Descriptions -->
     <!-- These are shown in Android Settings > Apps > Battery Alarm > Notifications -->
@@ -70,7 +72,10 @@
 
     <!-- Alert duration setting -->
     <string name="settings_alert_duration_title">Alert Duration</string>
-    <string name="settings_alert_duration_summary">Sound and vibration play for %1$d sec</string>
+    <plurals name="settings_alert_duration_summary">
+        <item quantity="one">Sound and vibration play for %1$d second</item>
+        <item quantity="other">Sound and vibration play for %1$d seconds</item>
+    </plurals>
 
     <!-- Sound toggle -->
     <string name="settings_sound_title">Alert Sound</string>
@@ -81,7 +86,6 @@
     <string name="settings_alarm_sound_title">Alarm Sound</string>
     <string name="settings_alarm_sound_summary">Current: %1$s</string>
     <string name="settings_alarm_sound_default">System default</string>
-    <string name="settings_alarm_sound_none">Silent</string>
 
     <!-- Vibration toggle -->
     <string name="settings_vibration_title">Vibration</string>
@@ -105,7 +109,10 @@
     <!-- Unit labels shown alongside slider values -->
     <string name="unit_percent">%1$d%%</string>
     <string name="unit_minutes">%1$d min</string>
-    <string name="unit_seconds">%1$d sec</string>
+    <plurals name="unit_seconds">
+        <item quantity="one">%1$d second</item>
+        <item quantity="other">%1$d seconds</item>
+    </plurals>
 
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- Update Checker Strings                                  -->
@@ -119,6 +126,4 @@
     <string name="notification_update_title">Update Available</string>
     <string name="notification_update_content">Battery Alarm v%1$s is available. Tap to download.</string>
 
-    <!-- Accessibility content description for the update icon on the main screen -->
-    <string name="cd_update_available">App update available, tap to open download page</string>
 </resources>

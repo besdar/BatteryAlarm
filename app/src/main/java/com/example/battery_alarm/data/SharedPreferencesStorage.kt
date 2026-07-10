@@ -2,6 +2,7 @@ package com.example.battery_alarm.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 
 /**
  * SharedPreferencesStorage is the **real Android implementation** of [SettingsStorage].
@@ -61,7 +62,7 @@ class SharedPreferencesStorage(context: Context) : SettingsStorage {
      * because we don't need to wait for the write to complete.
      */
     override fun putInt(key: String, value: Int) {
-        prefs.edit().putInt(key, value).apply()
+        prefs.edit { putInt(key, value) }
     }
 
     /**
@@ -76,7 +77,7 @@ class SharedPreferencesStorage(context: Context) : SettingsStorage {
      * Uses `.apply()` for the same reasons as [putInt].
      */
     override fun putBoolean(key: String, value: Boolean) {
-        prefs.edit().putBoolean(key, value).apply()
+        prefs.edit { putBoolean(key, value) }
     }
 
     /**
@@ -93,7 +94,7 @@ class SharedPreferencesStorage(context: Context) : SettingsStorage {
      * Uses `.apply()` for the same reasons as [putInt].
      */
     override fun putString(key: String, value: String?) {
-        prefs.edit().putString(key, value).apply()
+        prefs.edit { putString(key, value) }
     }
 
     companion object {

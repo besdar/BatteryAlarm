@@ -5,11 +5,15 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.net.toUri
+import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequest
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -27,7 +31,7 @@ import java.util.concurrent.TimeUnit
  * - **Battery optimization**: Work is batched with other apps' tasks.
  * - **Doze mode**: Work is deferred but guaranteed to run eventually.
  * - **App restarts**: Work survives app kills and device reboots.
- * - **Constraints**: We could add network constraints if needed.
+ * - **Constraints**: The request runs only when a connected network is available.
  *
  * ## How It Works
  * 1. WorkManager triggers this worker approximately once a month (30 days).
@@ -80,12 +84,7 @@ class UpdateCheckWorker(
          * @param context The application context (used to get WorkManager instance).
          */
         fun schedule(context: Context) {
-            // Build a periodic work request that runs approximately every 30 days.
-            // Android may delay execution due to Doze mode and battery optimization,
-            // so the actual interval could be longer — this is by design.
-            val workRequest = PeriodicWorkRequestBuilder<UpdateCheckWorker>(
-                CHECK_INTERVAL_DAYS, TimeUnit.DAYS
-            ).build()
+            val workRequest = createPeriodicWorkRequest()
 
             // Enqueue the work with a unique name. KEEP policy means:
             // "If work with this name already exists, don't replace it."
@@ -97,6 +96,16 @@ class UpdateCheckWorker(
 
             Log.d(TAG, "Scheduled periodic update check (every $CHECK_INTERVAL_DAYS days)")
         }
+
+        internal fun createPeriodicWorkRequest(): PeriodicWorkRequest =
+            PeriodicWorkRequestBuilder<UpdateCheckWorker>(
+                CHECK_INTERVAL_DAYS,
+                TimeUnit.DAYS
+            ).setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            ).build()
     }
 
     /**
@@ -149,6 +158,11 @@ class UpdateCheckWorker(
      * @param latestVersion The new version string to display in the notification.
      */
     private fun showUpdateNotification(latestVersion: String) {
+        if (!NotificationManagerCompat.from(applicationContext).areNotificationsEnabled()) {
+            Log.d(TAG, "Update available, but app notifications are disabled")
+            return
+        }
+
         val notificationManager =
             applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -168,7 +182,7 @@ class UpdateCheckWorker(
         // Create an intent to open the GitHub releases page in the browser
         val browserIntent = Intent(
             Intent.ACTION_VIEW,
-            Uri.parse(GitHubUpdateChecker.GITHUB_LATEST_RELEASE_PAGE_URL)
+            GitHubUpdateChecker.GITHUB_LATEST_RELEASE_PAGE_URL.toUri()
         )
         val pendingIntent = PendingIntent.getActivity(
             applicationContext,

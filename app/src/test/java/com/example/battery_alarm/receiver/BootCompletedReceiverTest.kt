@@ -2,6 +2,7 @@ package com.example.battery_alarm.receiver
 
 import android.content.Context
 import android.content.Intent
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -75,10 +76,16 @@ class BootCompletedReceiverTest {
     fun setUp() {
         // Create a fresh receiver for each test
         receiver = BootCompletedReceiver()
+        receiver.serviceRestarter = null
 
         // Get the Robolectric-managed application context.
         // Still needed because onReceive() requires a Context parameter.
         context = RuntimeEnvironment.getApplication()
+    }
+
+    @After
+    fun tearDown() {
+        receiver.serviceRestarter = null
     }
 
     // ═════════════════════════════════════════════════════════════

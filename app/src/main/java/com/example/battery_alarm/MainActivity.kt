@@ -43,21 +43,20 @@ import com.example.battery_alarm.update.UpdateCheckWorker
  * - We use `rememberSaveable` so the navigation state survives configuration changes
  *   (e.g., screen rotation).
  * 
- * ## Why Request Notification Permission Here?
+ * ## Notification Permission Timing
  * Starting from Android 13 (API 33), apps must request the POST_NOTIFICATIONS permission
  * at runtime before showing any notifications. Without this permission:
  * - The foreground service notification won't be visible
  * - Battery alert notifications won't appear
  * 
- * We request this permission when the activity starts so that:
- * 1. The user sees the permission dialog early in their experience
- * 2. The service can show notifications immediately when enabled
+ * The activity only reads the current permission state at launch. It requests permission
+ * when the user tries to enable monitoring, which gives the request clear context.
  * 
  * ## How Permission Handling Works:
  * 1. On activity creation, we check if we already have the permission
- * 2. If not, we use ActivityResultContracts.RequestPermission() to show the system dialog
- * 3. The result (granted/denied) is stored in a state variable
- * 4. MainScreen can use this state to show appropriate UI or warnings
+ * 2. MainScreen asks the activity to request it when the user enables monitoring
+ * 3. The result (granted/denied) is stored in state
+ * 4. After a denial, MainScreen exposes an explicit retry action
  */
 class MainActivity : ComponentActivity() {
     
@@ -71,6 +70,7 @@ class MainActivity : ComponentActivity() {
      * ensuring the UI stays in sync with the actual permission state.
      */
     private val hasNotificationPermission = mutableStateOf(false)
+    private val notificationPermissionWasDenied = mutableStateOf(false)
     
     /**
      * Permission request launcher using the modern Activity Result API.
@@ -91,6 +91,7 @@ class MainActivity : ComponentActivity() {
     ) { isGranted: Boolean ->
         // Update our state when the user responds to the permission dialog
         hasNotificationPermission.value = isGranted
+        notificationPermissionWasDenied.value = !isGranted
         
         // Log the result for debugging purposes
         if (isGranted) {
@@ -104,9 +105,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         
-        // Check and request notification permission for Android 13+ (API 33+)
-        // This must be done before setContent to ensure the state is correct on first render
-        checkAndRequestNotificationPermission()
+        refreshNotificationPermissionState()
 
         // Schedule the periodic update check worker (runs approximately every 30 days).
         // This uses WorkManager with KEEP policy, so calling it multiple times
@@ -141,6 +140,7 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(innerPadding),
                             // Pass the permission state so MainScreen can react to it
                             hasNotificationPermission = hasNotificationPermission.value,
+                            showNotificationPermissionRetry = notificationPermissionWasDenied.value,
                             // Provide a callback to request permission if user tries to enable
                             // service without permission
                             onRequestNotificationPermission = {
@@ -158,7 +158,7 @@ class MainActivity : ComponentActivity() {
     }
     
     /**
-     * Checks if notification permission is already granted, and requests it if not.
+     * Reads the current notification permission state without prompting the user.
      * 
      * ## Version Check Explanation:
      * - Android 13 (API 33) introduced POST_NOTIFICATIONS as a runtime permission
@@ -169,7 +169,7 @@ class MainActivity : ComponentActivity() {
      * - If permission is already granted, we don't want to show the dialog again
      * - checkSelfPermission() tells us the current state without prompting the user
      */
-    private fun checkAndRequestNotificationPermission() {
+    private fun refreshNotificationPermissionState() {
         // Only needed for Android 13 (API 33) and above
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             // Check if we already have the permission
@@ -178,18 +178,16 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.POST_NOTIFICATIONS
             )
             
-            if (permissionStatus == PackageManager.PERMISSION_GRANTED) {
-                // Already have permission - update state and we're done
-                hasNotificationPermission.value = true
-            } else {
-                // Don't have permission - request it from the user
-                // This will show the system permission dialog
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            hasNotificationPermission.value =
+                permissionStatus == PackageManager.PERMISSION_GRANTED
+            if (hasNotificationPermission.value) {
+                notificationPermissionWasDenied.value = false
             }
         } else {
             // On Android 12 and below, notification permission is granted at install time
             // So we can assume we have it
             hasNotificationPermission.value = true
+            notificationPermissionWasDenied.value = false
         }
     }
     

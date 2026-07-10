@@ -8,7 +8,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * GitHubUpdateChecker is the **production implementation** of [UpdateChecker].
+ * GitHubUpdateChecker fetches the latest release version from GitHub.
  * It fetches the latest release version from the GitHub Releases API.
  *
  * ## How It Works
@@ -28,35 +28,34 @@ import java.net.URL
  *
  * ## GitHub API Rate Limits
  * Unauthenticated requests are limited to 60/hour per IP. Since we only
- * check once a month (via WorkManager) and once per app open, this is
- * well within limits.
+ * check once a month via WorkManager, this is well within limits.
  *
- * @param apiUrl The GitHub API URL for the latest release. Uses a template
- *               string by default — replace it with the actual repository URL.
+ * @param apiUrl The GitHub API URL for the latest release.
  */
 class GitHubUpdateChecker(
     private val apiUrl: String = GITHUB_LATEST_RELEASE_URL
-) : UpdateChecker {
+) {
 
     companion object {
         private const val TAG = "GitHubUpdateChecker"
 
         /**
-         * Template URL for the GitHub Releases API endpoint.
-         * Replace "OWNER" and "REPO" with the actual GitHub repository owner and name.
+         * GitHub Releases API endpoint for Battery Alarm.
          *
          * The GitHub API returns JSON with a `tag_name` field containing the version,
          * e.g., {"tag_name": "v1.2", "name": "Release 1.2", ...}
          */
         const val GITHUB_LATEST_RELEASE_URL =
-            "https://api.github.com/repos/OWNER/REPO/releases/latest"
+            "https://api.github.com/repos/besdar/BatteryAlarm/releases/latest"
 
         /**
-         * URL template for opening the latest release page in a browser.
-         * Replace "OWNER" and "REPO" with the actual GitHub repository owner and name.
+         * URL for opening the latest Battery Alarm release page in a browser.
          */
         const val GITHUB_LATEST_RELEASE_PAGE_URL =
-            "https://github.com/OWNER/REPO/releases/latest"
+            "https://github.com/besdar/BatteryAlarm/releases/latest"
+
+        internal fun normalizeTag(tagName: String): String =
+            tagName.removePrefix("v").removePrefix("V")
 
         /** Timeout for connecting to GitHub API (in milliseconds). */
         private const val CONNECT_TIMEOUT_MS = 10_000  // 10 seconds
@@ -80,7 +79,7 @@ class GitHubUpdateChecker(
      *
      * @return The latest version string (e.g., "1.2"), or null on failure.
      */
-    override suspend fun getLatestVersion(): String? = withContext(Dispatchers.IO) {
+    suspend fun getLatestVersion(): String? = withContext(Dispatchers.IO) {
         try {
             // Open connection to the GitHub API
             val url = URL(apiUrl)
@@ -120,7 +119,7 @@ class GitHubUpdateChecker(
 
             // Strip the leading "v" prefix if present (e.g., "v1.2" → "1.2")
             // This normalizes the version string for comparison with our versionName
-            val version = tagName.removePrefix("v").removePrefix("V")
+            val version = normalizeTag(tagName)
 
             Log.d(TAG, "Latest version from GitHub: $version (tag: $tagName)")
             version

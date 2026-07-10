@@ -3,6 +3,7 @@ package com.example.battery_alarm.ui
 import android.content.Intent
 import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -41,15 +42,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import com.example.battery_alarm.R
 import com.example.battery_alarm.data.SettingsRepository
 import com.example.battery_alarm.data.SharedPreferencesStorage
+import com.example.battery_alarm.service.BatteryMonitorService
 import com.example.battery_alarm.ui.theme.BatteryAlarmTheme
 import kotlin.math.roundToInt
 
@@ -124,6 +128,7 @@ fun SettingsScreen(
     // small app this manual constructor injection is sufficient.
     val context = LocalContext.current
     val repository = remember { SettingsRepository(SharedPreferencesStorage(context)) }
+    val reloadMonitoringSettings = { BatteryMonitorService.reload(context) }
 
     // ── Local mutable state for each setting ──────────────────
     // We read the initial value from the repository once (via `remember`),
@@ -151,20 +156,23 @@ fun SettingsScreen(
 
     // Alarm sound URI — null means "use system default"
     var alarmSoundUri by remember { mutableStateOf(repository.alarmSoundUri) }
+    val defaultAlarmSoundName = stringResource(R.string.settings_alarm_sound_default)
+    val alarmSoundPickerTitle = stringResource(R.string.settings_alarm_sound_title)
 
     // ── Resolve the alarm sound name for display ──────────────
     // We show the human-readable ringtone title (e.g., "Alarm Clock")
     // instead of the raw content:// URI. If null, show "System default".
-    val alarmSoundName = remember(alarmSoundUri) {
-        if (alarmSoundUri != null) {
+    val alarmSoundName = remember(alarmSoundUri, defaultAlarmSoundName) {
+        val selectedAlarmSoundUri = alarmSoundUri
+        if (selectedAlarmSoundUri != null) {
             try {
-                val ringtone = RingtoneManager.getRingtone(context, Uri.parse(alarmSoundUri))
-                ringtone?.getTitle(context) ?: context.getString(R.string.settings_alarm_sound_default)
+                val ringtone = RingtoneManager.getRingtone(context, selectedAlarmSoundUri.toUri())
+                ringtone?.getTitle(context) ?: defaultAlarmSoundName
             } catch (e: Exception) {
-                context.getString(R.string.settings_alarm_sound_default)
+                defaultAlarmSoundName
             }
         } else {
-            context.getString(R.string.settings_alarm_sound_default)
+            defaultAlarmSoundName
         }
     }
 
@@ -178,10 +186,19 @@ fun SettingsScreen(
         // The ringtone picker returns the selected URI in the intent extras.
         // EXTRA_RINGTONE_PICKED_URI contains the chosen ringtone's URI.
         // If the user selected "Silent", the URI will be null.
-        val uri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+        val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            result.data?.getParcelableExtra(
+                RingtoneManager.EXTRA_RINGTONE_PICKED_URI,
+                Uri::class.java
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+        }
         val uriString = uri?.toString()
         alarmSoundUri = uriString
         repository.alarmSoundUri = uriString
+        reloadMonitoringSettings()
     }
 
     // Controls the "Reset to Defaults?" confirmation dialog
@@ -247,6 +264,7 @@ fun SettingsScreen(
                     lowThreshold = snapped
                     // Persist immediately so the value survives app kill
                     repository.lowThreshold = snapped.roundToInt()
+                    reloadMonitoringSettings()
                 }
             )
 
@@ -264,6 +282,7 @@ fun SettingsScreen(
                     val snapped = snapToStep(newValue, THRESHOLD_STEP)
                     highThreshold = snapped
                     repository.highThreshold = snapped.roundToInt()
+                    reloadMonitoringSettings()
                 }
             )
 
@@ -291,6 +310,7 @@ fun SettingsScreen(
                     val snapped = snapToStep(newValue, INTERVAL_STEP_MINUTES)
                     alertIntervalMinutes = snapped
                     repository.alertIntervalMinutes = snapped.roundToInt()
+                    reloadMonitoringSettings()
                 }
             )
 
@@ -311,6 +331,7 @@ fun SettingsScreen(
                     val snapped = snapToStep(newValue, INTERVAL_STEP_MINUTES)
                     fullChargeIntervalMinutes = snapped
                     repository.fullChargeAlertIntervalMinutes = snapped.roundToInt()
+                    reloadMonitoringSettings()
                 }
             )
 
@@ -318,19 +339,25 @@ fun SettingsScreen(
             // Step size = 5 seconds: range is 5..60 = 55 units → (55 / 5) - 1 = 10 stops.
             SettingsSliderItem(
                 title = stringResource(R.string.settings_alert_duration_title),
-                summary = stringResource(
-                    R.string.settings_alert_duration_summary,
+                summary = pluralStringResource(
+                    R.plurals.settings_alert_duration_summary,
+                    alertDurationSeconds.roundToInt(),
                     alertDurationSeconds.roundToInt()
                 ),
                 value = alertDurationSeconds,
                 valueRange = SettingsRepository.MIN_ALERT_DURATION_SECONDS.toFloat()..SettingsRepository.MAX_ALERT_DURATION_SECONDS.toFloat(),
                 steps = (SettingsRepository.MAX_ALERT_DURATION_SECONDS - SettingsRepository.MIN_ALERT_DURATION_SECONDS) / DURATION_STEP_SECONDS - 1,
-                valueLabel = stringResource(R.string.unit_seconds, alertDurationSeconds.roundToInt()),
+                valueLabel = pluralStringResource(
+                    R.plurals.unit_seconds,
+                    alertDurationSeconds.roundToInt(),
+                    alertDurationSeconds.roundToInt()
+                ),
                 contentDescription = stringResource(R.string.cd_alert_duration_slider),
                 onValueChange = { newValue ->
                     val snapped = snapToStep(newValue, DURATION_STEP_SECONDS)
                     alertDurationSeconds = snapped
                     repository.alertDurationSeconds = snapped.roundToInt()
+                    reloadMonitoringSettings()
                 }
             )
 
@@ -353,6 +380,7 @@ fun SettingsScreen(
                 onCheckedChange = { newValue ->
                     isSoundEnabled = newValue
                     repository.isSoundEnabled = newValue
+                    reloadMonitoringSettings()
                 }
             )
 
@@ -361,7 +389,7 @@ fun SettingsScreen(
             // system ringtone picker when tapped. This lets the user choose
             // from all system alarm, ringtone, and notification sounds.
             SettingsClickableItem(
-                title = stringResource(R.string.settings_alarm_sound_title),
+                title = alarmSoundPickerTitle,
                 summary = stringResource(R.string.settings_alarm_sound_summary, alarmSoundName),
                 onClick = {
                     // Build an intent to launch Android's built-in ringtone picker.
@@ -372,12 +400,12 @@ fun SettingsScreen(
                         // Title shown at the top of the picker dialog
                         putExtra(
                             RingtoneManager.EXTRA_RINGTONE_TITLE,
-                            context.getString(R.string.settings_alarm_sound_title)
+                            alarmSoundPickerTitle
                         )
                         // Pre-select the currently chosen sound (or null for default)
                         putExtra(
                             RingtoneManager.EXTRA_RINGTONE_EXISTING_URI,
-                            if (alarmSoundUri != null) Uri.parse(alarmSoundUri) else null
+                            alarmSoundUri?.toUri()
                         )
                         // Show a "Default" option that maps to the system default alarm
                         putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
@@ -404,6 +432,7 @@ fun SettingsScreen(
                 onCheckedChange = { newValue ->
                     isVibrationEnabled = newValue
                     repository.isVibrationEnabled = newValue
+                    reloadMonitoringSettings()
                 }
             )
 
@@ -448,6 +477,7 @@ fun SettingsScreen(
                     onClick = {
                         // Reset all values in the repository
                         repository.resetToDefaults()
+                        reloadMonitoringSettings()
 
                         // Update local state to reflect the reset values
                         // This triggers recomposition so sliders/toggles snap to defaults
